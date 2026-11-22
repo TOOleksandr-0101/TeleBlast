@@ -49,6 +49,15 @@ class CandidateTests(unittest.TestCase):
     def test_second_semantic_change_disables_value_pruning(self):
         self.assertEqual(self.plan("return not (a <= b)"), set(range(6)))
 
+    def test_source_only_change_respects_subprocess_path_evidence(self):
+        self.selector.child_complete = {5}
+        self.assertEqual(self.plan("return a < b  # note"), set())
+        self.selector.child_paths = {"src.py": [self.catalog[5]["id"]]}
+        self.assertEqual(self.plan("return a < b  # note"), {5})
+        self.selector.child_paths.clear()
+        self.selector.child_complete.clear()
+        self.assertEqual(self.plan("return a < b  # note"), {5})
+
     def test_identity_and_ordering_uncertainty(self):
         self.assertFalse(relation_result("Is", "equal"))
         self.assertTrue(relation_result("Eq", "equal"))

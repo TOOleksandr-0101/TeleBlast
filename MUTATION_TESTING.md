@@ -52,6 +52,18 @@ Precision omitted all six failures caused by a class configuration value shared
 across dialects. Coverage also missed many tests after a lazy dialect import
 broke. These are mutation results, not sample or leaderboard scores.
 
+## Short-circuit experiment
+
+An additional development experiment is reproducible with
+`python tools/probe_short_circuit.py`. It compares the ordered short-circuit
+evaluation graphs for predicates whose leaf expressions are identical. A
+fully attributed test can be excluded only when it never reached a possible
+first point of divergence. The probe verifies source-line witnesses against
+compiled name loads and retains source readers, collection dependencies and
+incomplete traces. On the 30-patch sample it recognized three module edits
+and removed **zero test selections**. The submission selector does not run
+this experiment. Its proof tests run with the other development tests.
+
 ## Generic AST mutation generator
 
 `tools/mutation_validate.py` evaluates selectors on changes generated from the

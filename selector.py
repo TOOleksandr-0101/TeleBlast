@@ -4,7 +4,7 @@ import argparse
 import ast
 from bisect import bisect_left
 from collections import defaultdict
-from functools import lru_cache
+from functools import cached_property, lru_cache
 import gzip
 import hashlib
 import json
@@ -172,21 +172,21 @@ class SyntaxModel:
         )
         return (*encoded, ast.get_docstring(node, clean=False))
 
-    @property
+    @cached_property
     def definition_signatures(self):
         return {key: self._signature(node) for key, node in self.scopes.items()}
 
-    @property
+    @cached_property
     def imports(self):
         return tuple(
             _dump(node) for node in self.nodes if isinstance(node, (ast.Import, ast.ImportFrom))
         )
 
-    @property
+    @cached_property
     def semantics(self):
         return _dump(self.tree)
 
-    @property
+    @cached_property
     def exception_handlers(self):
         return tuple(
             _dump(node.type) if node.type is not None else None
@@ -336,6 +336,9 @@ class Selector:
             self.receiver_groups = [self.catalog.resolve(receiver_nodes[i] for i in grp)
                                     for grp in receivers.get("groups", ())]
             self.receiver_complete = self.catalog.resolve(receiver_nodes[i] for i in receivers.get("complete", ()))
+            children = read_map(maps, "subprocess")
+            self.child_complete = self.catalog.resolve(children.get("complete", ()))
+            self.child_paths = children.get("paths", {})
 
     @lru_cache(maxsize=32)
     def source(self, path):
@@ -550,9 +553,11 @@ class Selector:
             return self.static_tests("files", path) or self.all
         # AST-equal edits can still alter source text or positions. Incomplete
         # subprocess traces cannot rule out observation.
-        protected = self.source_observers(path) | self.catalog.resolve([path]) | self.coverage.untraced
+        protected = self.source_observers(path) | self.catalog.resolve([path])
         if original.semantics == updated.semantics:
-            return selected | protected
+            seen_in_children = self.catalog.resolve(self.child_paths.get(path, ()))
+            return selected | protected | seen_in_children | (self.coverage.untraced - self.child_complete)
+        protected.update(self.coverage.untraced)
         ranges = [r for h in change.hunks for r in h.changes()]
         # Constructing a scalar of the same builtin type cannot fail while
         # the class body is executing. Follow observed readers of that slot
@@ -590,7 +595,7 @@ class Selector:
                             previous = b[2].value
                             try:
                                 b[2].value = a[2].value
-                                only_literal = original.semantics == updated.semantics
+                                only_literal = original.semantics == _dump(updated.tree)
                             finally:
                                 b[2].value = previous
                             if only_literal:
