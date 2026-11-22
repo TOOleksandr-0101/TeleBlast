@@ -51,8 +51,15 @@ The benchmark starts with the supplied `make sample`. Three further runs use the
 | Supplied starter, all tests on three workers | 1210.470 | 0 |
 | All tests, optimized worker count | 1104.510 | 0 |
 | Static dependencies and fixtures | 767.372 | 0 |
-| Changed-line coverage and file reads | 300.868 | 0 |
+| Changed-line coverage and file reads | 301.396 | 0 |
 | **Hybrid (submission default)** | **491.903** | **0** |
+
+| Linux/amd64 benchmark | Median selector CPU | Median selector wall time | Docker build |
+| --- | ---: | ---: | ---: |
+| [Unmodified starter](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014264836) | 0.111058 s | 0.111652 s | 4.624 s |
+| [Hybrid, before the map rebuild](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014772168) | 0.539645 s | 0.540208 s | 7.680 s |
+
+The hybrid saves **718.567 simulated seconds (59.4%)** against the measured starter. Simulated time plus the measured median selector CPU was **492.443 s**, below the brief's 1614.1-second target on the sample. The [second Linux map build](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014839162) preserved the default plans byte for byte. The coverage-only ablation changed from 300.868 s to 301.396 s. The [sample workflow](https://github.com/TOOleksandr-0101/TeleBlast/actions/workflows/sample.yml) records timings, all four strategies and the full report for each pushed revision.
 
 The hybrid default retains a function's other callers and transitive importers when a change could affect initialization. Exact-line coverage was faster on these 30 patches. New control flow can enter a line that none of the original tests reached, so this narrower mode remains an experiment. The hybrid selector's plans attain the scheduling lower bound on **30/30** commits and occupy **65,414 bytes** of stdout.
 
