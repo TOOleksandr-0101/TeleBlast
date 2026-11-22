@@ -1,0 +1,44 @@
+name: Replay independent mutations
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run:
+        description: "Run ID from the Independent mutation corpus workflow"
+        default: "45019915124"
+        required: true
+  push:
+    branches: [main]
+    paths: ['.github/workflows/replay.yml', 'benchmarks/replay_mutations.py', 'benchmarks/independent.mk', 'selector.py', 'impact.py', 'scheduler.py', 'maps/**', 'Dockerfile']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-*
+          path: .bench/frozen
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.evidence_run || '45019915124' }}
+      - name: Build the submission image from scratch
+        run: make build
+      - id: comparison
+        name: Run the production image and score finished plans
+        run: python3 benchmarks/replay_mutations.py .bench/frozen .bench/replay.json
+      - name: ${{ steps.comparison.outputs.all }}
+        run: echo "All frozen cases"
+      - name: ${{ steps.comparison.outputs.discovery }}
+        run: echo "Discovery cases"
+      - name: ${{ steps.comparison.outputs.holdout }}
+        run: echo "Prespecified held-out cases"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replay-details
+          path: .bench/replay.json
+          include-hidden-files: true

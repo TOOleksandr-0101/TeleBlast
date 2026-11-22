@@ -31,6 +31,39 @@ NUMERIC = {id(int), id(bool), id(float)}
 ORDERED = {id(str), id(bytes)}
 SIMPLE = NUMERIC | ORDERED | {id(type(None))}
 HELPER = "__teleblast_observe_cmp__"
+IDENTITY = (object.__eq__, object.__ne__)
+
+
+def equality_slots(cls):
+    """Read raw special-method definitions without executing user descriptors."""
+    missing = object()
+    eq = ne = missing
+    for base in type.__getattribute__(cls, "__mro__"):
+        attrs = type.__getattribute__(base, "__dict__")
+        if eq is missing:
+            eq = attrs.get("__eq__", missing)
+        if ne is missing:
+            ne = attrs.get("__ne__", missing)
+        if eq is not missing and ne is not missing:
+            break
+    return eq, ne
+
+
+def extended_relation(a, b):
+    left, right = type(a), type(b)
+    left_eq, left_ne = equality_slots(left)
+    right_eq, right_ne = equality_slots(right) if left is not right else (left_eq, left_ne)
+    if left_eq is IDENTITY[0] and right_eq is IDENTITY[0] and left_ne is IDENTITY[1] and right_ne is IDENTITY[1]:
+        return "identity_equal" if a is b else "identity_unequal"
+    # Plain str/int Enum subclasses can inherit builtin equality. Check both
+    # participants' raw slots before using the builtin comparator itself.
+    for base in (str, int, bytes):
+        if (left_eq is base.__eq__ and right_eq is base.__eq__ and
+                left_ne is base.__ne__ and right_ne is base.__ne__):
+            if base.__eq__(a, b) is True:
+                return "identity_equal" if a is b else "value_equal"
+            return "identity_unequal"
+    return "opaque"
 
 
 def relation(a, b):
@@ -93,7 +126,12 @@ class Recorder:
 
     def observe(self, key, op, a, b):
         if self.mask:
-            self.batch.add((key, relation(a, b)))
+            kind = relation(a, b)
+            # Examine raw Python slots only for identity comparisons. The
+            # other operators can call arbitrary user-defined methods.
+            if kind == "opaque" and op in {"Is", "IsNot"}:
+                kind = extended_relation(a, b)
+            self.batch.add((key, kind))
         else:
             self.outside.add(key)
         return OPS[op](a, b)

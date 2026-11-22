@@ -20,7 +20,7 @@ from scheduler import schedule
 
 MAPS = Path(__file__).resolve().parent / "maps"
 REVISION = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
-SUPPORTED_STRATEGIES = ("all", "static", "coverage", "hybrid", "precision")
+SUPPORTED_STRATEGIES = ("all", "static", "coverage", "hybrid", "precision", "candidate")
 
 
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -50,6 +50,46 @@ def _overlaps(node, first, last):
 
 def _dump(value):
     return ast.dump(value, include_attributes=False)
+
+
+def comparison_edit(before, after):
+    """Identify an edit whose sole semantic AST difference is one comparison operator."""
+    found = []
+
+    def match(a, b):
+        if type(a) is not type(b):
+            return False
+        if isinstance(a, list):
+            return len(a) == len(b) and all(match(x, y) for x, y in zip(a, b))
+        if not isinstance(a, ast.AST):
+            return a == b
+        if isinstance(a, ast.Compare) and len(a.ops) == len(b.ops) == 1:
+            old, new = type(a.ops[0]).__name__, type(b.ops[0]).__name__
+            if old != new:
+                if found:
+                    return False
+                found.append((a.lineno, a.col_offset, old, new))
+            return match(a.left, b.left) and match(a.comparators, b.comparators)
+        return all(match(getattr(a, key), getattr(b, key)) for key in a._fields)
+
+    return found[0] if match(before, after) and found else None
+
+
+def relation_result(op, relation):
+    identity_only = {"identity_equal", "identity_unequal", "value_equal"}
+    if relation not in {"same", "equal", "less", "greater", "disjoint"} | identity_only:
+        return None
+    if op in {"Is", "IsNot"}:
+        return (relation in {"same", "identity_equal"}) == (op == "Is")
+    if op in {"Eq", "NotEq"}:
+        return (relation in {"same", "equal", "identity_equal", "value_equal"}) == (op == "Eq")
+    # Two different builtin types can be unordered. 'same' can also refer
+    # to None, which has no ordering even when both operands are identical.
+    if relation in {"same", "disjoint"} | identity_only:
+        return None
+    truth = {"Lt": {"less"}, "LtE": {"less", "equal"},
+             "Gt": {"greater"}, "GtE": {"greater", "equal"}}
+    return relation in truth[op] if op in truth else None
 
 
 def read_map(directory, name):
@@ -274,9 +314,21 @@ class Selector:
         self.all = self.catalog.numbers
         self.strategy = strategy
         self.static = read_map(maps, "static") if strategy != "all" else {}
-        data = read_map(maps, "coverage") if strategy in ("coverage", "hybrid", "precision") else {}
+        data = read_map(maps, "coverage") if strategy in ("coverage", "hybrid", "precision", "candidate") else {}
         self.coverage = Coverage(data, self.catalog)
         self.source_zip = ZipFile(maps / "sources.zip") if strategy != "all" else None
+        if strategy == "candidate":
+            obs = read_map(maps, "observations")
+            nodes = obs.get("nodes", ())
+            self.observed_sites = obs.get("sites", {})
+            self.observed_groups = [self.catalog.resolve(nodes[i] for i in grp)
+                                    for grp in obs.get("groups", ())]
+            self.observed_complete = self.catalog.resolve(nodes[i] for i in obs.get("complete", ()))
+            self.collection = read_map(maps, "collection")
+            members = read_map(maps, "member_reads")
+            self.member_reads = members.get("uses", {})
+            self.member_groups = members.get("groups", ())
+            self.member_nodes = members.get("nodes", ())
 
     @lru_cache(maxsize=32)
     def source(self, path):
@@ -346,6 +398,13 @@ class Selector:
         except (SyntaxError, ValueError, OverflowError, RecursionError) as exc:
             raise UnsupportedPatch("invalid patched Python") from exc
 
+        selected = self._precision_select(change, original, updated)
+        if self.strategy == "candidate":
+            return self._candidate_select(change, original, updated, selected)
+        return selected
+
+    def _precision_select(self, change, original, updated):
+        path = change.path
         observers = self.source_observers(path)
         direct_test = self.catalog.resolve([path])
         if original.semantics == updated.semantics:
@@ -478,6 +537,52 @@ class Selector:
             return self._precision_structural(path, observers)
         return result
 
+    def _candidate_select(self, change, original, updated, selected):
+        path = change.path
+        if not self.coverage.available:
+            return self.static_tests("files", path) or self.all
+        # AST-equal edits can still alter source text or positions. Incomplete
+        # subprocess traces cannot rule out observation.
+        protected = self.source_observers(path) | self.catalog.resolve([path]) | self.coverage.untraced
+        if original.semantics == updated.semantics:
+            return selected | protected
+        ranges = [r for h in change.hunks for r in h.changes()]
+        # Isolated collection detects function calls made while importing
+        # test modules, before ordinary per-test line attribution began.
+        collection_modules = set()
+        for start, end, modules in self.collection.get("files", {}).get(path, ()):
+            if any(first <= end and start <= last for first, last in ranges):
+                collection_modules.update(modules)
+        protected.update(self.catalog.resolve(collection_modules))
+        if self.collection:
+            protected.update(self.all - self.catalog.resolve(self.collection.get("complete", ())))
+
+        for first, last in ranges:
+            scope = original.scope(first, last, "function")
+            owner = original.scope(first, last, "class")
+            stmt = original.statement(first, last)
+            if scope is None and owner and isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id in self.member_reads:
+                        group = self.member_groups[self.member_reads[target.id]]
+                        protected.update(self.catalog.resolve(self.member_nodes[i] for i in group))
+
+        if self.observed_sites:
+            edit = comparison_edit(original.tree, updated.tree)
+            if edit:
+                line, col, old, new = edit
+                row = self.observed_sites.get(f"{path}:{line}:{col}", {})
+                equal, uncertain = set(), set()
+                for relation, group in row.items():
+                    a, b = relation_result(old, relation), relation_result(new, relation)
+                    bucket = equal if a is not None and a == b else uncertain
+                    bucket.update(self.observed_groups[group])
+                # Require that every observation for a test agrees. A single
+                # opaque/changed operand or untraced child prevents removal.
+                selected = selected - ((equal - uncertain) & self.observed_complete)
+        return selected | protected
+
     def python_tests(self, change):
         path = change.path
         before = self.source(path)
@@ -530,12 +635,16 @@ class Selector:
     def file_tests(self, change):
         path = change.path
         if path.endswith(".py"):
-            if self.strategy == "precision":
+            if self.strategy in {"precision", "candidate"}:
                 return self.precision_python_tests(change)
             return self.python_tests(change)
         readers = self.coverage.readers.get(path, set())
         owners = self.static_tests("fixtures", path)
-        if self.strategy == "precision":
+        if self.strategy in {"precision", "candidate"}:
+            if self.strategy == "candidate":
+                collecting = self.catalog.resolve(self.collection.get("resources", {}).get(path, ()))
+                if collecting:
+                    return owners | readers | collecting | self.coverage.untraced
             if owners or readers:
                 return owners | readers
             return self.static_tests("files", path) or self.all
