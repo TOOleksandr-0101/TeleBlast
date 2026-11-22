@@ -22,8 +22,8 @@ def emit(name, value):
             print(f"{name}={value}", file=output)
 
 
-def measure(name, checkout, output, tests):
-    case = next((case for case in CASES if case.name == name), None)
+def measure(name, checkout, output, tests, cases=CASES):
+    case = next((case for case in cases if case.name == name), None)
     if case is None and name != "baseline":
         raise ValueError(name)
     output.mkdir(parents=True, exist_ok=True)
@@ -71,7 +71,7 @@ def measure(name, checkout, output, tests):
         raise SystemExit("incomplete evidence or non-clean baseline")
 
 
-def compare(artifacts, output, tests):
+def compare(artifacts, output, tests, cases=CASES):
     strategies = [s for s in ("hybrid", "coverage", "precision", "candidate")
                   if s in SUPPORTED_STRATEGIES]
     labels = {}
@@ -80,12 +80,12 @@ def compare(artifacts, output, tests):
         if not record["valid"] or record["name"] in labels or record["revision"] != REVISION:
             raise ValueError((path, record))
         labels[record["name"]] = (record, path.parent)
-    if set(labels) != {"baseline", *(c.name for c in CASES)} or labels["baseline"][0]["failing"]:
+    if set(labels) != {"baseline", *(c.name for c in cases)} or labels["baseline"][0]["failing"]:
         raise ValueError("expected all frozen cases and clean baseline")
     result = []
     sums = {s: [0, 0, 0] for s in strategies}  # raw cost in ms, missed commits, missed tests
     lines = []
-    for case in CASES:
+    for case in cases:
         obs, directory = labels[case.name]
         actual = set(obs["failing"])
         predictions = predict(directory / "change.patch", tests, strategies, actual, ROOT / "maps")
@@ -117,7 +117,7 @@ def compare(artifacts, output, tests):
                   *lines, "```", sep="\n", file=summary)
 
 
-if __name__ == "__main__":
+def main(cases=CASES):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     m = sub.add_parser("measure")
@@ -130,6 +130,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     catalog = json.loads((ROOT / "sample/tests.json").read_text())["tests"]
     if args.command == "measure":
-        measure(args.case, args.checkout, args.output, catalog)
+        measure(args.case, args.checkout, args.output, catalog, cases)
     else:
-        compare(args.artifacts, args.output, catalog)
+        compare(args.artifacts, args.output, catalog, cases)
+
+
+if __name__ == "__main__":
+    main()
