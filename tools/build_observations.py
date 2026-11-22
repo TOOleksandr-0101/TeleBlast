@@ -99,14 +99,14 @@ class Loader(SourceFileLoader):
         path = self.get_filename(fullname)
         data = self.get_data(path)
         tree = ast.parse(data, filename=path)
-        tree = Rewrite(Path(path).relative_to(REC.root).as_posix()).visit(tree)
+        tree = REWRITER(Path(path).relative_to(REC.root).as_posix()).visit(tree)
         return compile(ast.fix_missing_locations(tree), path, "exec", dont_inherit=True)
 
 
 class Finder:
     @staticmethod
     def find_spec(fullname, path, target=None):
-        if fullname.split(".", 1)[0] != "sqlglot":
+        if fullname.split(".", 1)[0] not in PACKAGES:
             return None
         spec = PathFinder.find_spec(fullname, path, target)
         if (spec and isinstance(spec.loader, SourceFileLoader) and
@@ -151,14 +151,22 @@ class Recorder:
 
 REC = None
 WORKER_PID = None
+REWRITER = Rewrite
+PACKAGES = {"sqlglot"}
 
 
 def install(root):
-    global REC
+    global REC, REWRITER
     if any(name == "sqlglot" or name.startswith("sqlglot.") for name in sys.modules):
         raise RuntimeError("instrumentation must precede sqlglot import")
     REC = Recorder(Path(root))
-    setattr(builtins, HELPER, REC.observe)
+    if os.environ.get("TELEBLAST_PROFILE_KIND") == "receivers":
+        import profile_receivers
+        REWRITER = profile_receivers.Rewrite
+        PACKAGES.add("tests")
+        profile_receivers.bind(REC)
+    else:
+        setattr(builtins, HELPER, REC.observe)
     sys.meta_path.insert(0, Finder())
     sys.addaudithook(REC.audit)
 
@@ -191,18 +199,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--kind", choices=("comparisons", "receivers"), default="comparisons")
     options = parser.parse_args()
     root = options.checkout.resolve()
     output = options.output.resolve()
     validate_checkout(root)
     os.chdir(root)
     sys.path.insert(0, str(root))
-    os.environ.update(TELEBLAST_PROFILE_ROOT=str(root), SKIP_INTEGRATION="0",
+    os.environ.update(TELEBLAST_PROFILE_ROOT=str(root), TELEBLAST_PROFILE_KIND=options.kind, SKIP_INTEGRATION="0",
                       PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
-    install(root)
-    plugin = Attribution(REC)
     submit = ProcessPoolExecutor.submit
     with TemporaryDirectory() as spool:
+        if options.kind == "receivers":
+            from profile_receivers import manifest
+            fields = manifest(root)
+            inputs = Path(spool) / "fields.json"
+            inputs.write_text(json.dumps(fields))
+            os.environ["TELEBLAST_FIELDS"] = str(inputs)
+        install(root)
+        plugin = Attribution(REC)
         def wrapped(pool, fn, /, *args, **kwargs):
             return submit(pool, profile_job, str(root), spool, REC.mask, fn, args, kwargs)
         ProcessPoolExecutor.submit = wrapped
@@ -235,10 +250,13 @@ def main():
                 and node not in plugin.incomplete and not (REC.untraced_children >> i & 1)]
     payload = {"revision": REVISION, "version": 1, "nodes": plugin.nodes,
                "complete": complete, "groups": [indices(mask) for mask in groups], "sites": sites}
+    if options.kind == "receivers":
+        payload["tracked"] = sorted(f"{cls}:{member}" for cls, attrs in fields.items()
+                                    for member in attrs if f"{cls}:{member}" not in REC.outside)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(gzip.compress(json.dumps(payload, separators=(",", ":")).encode(),
                                      compresslevel=9, mtime=0))
-    print(f"{len(sites)} comparison sites, {len(complete)} complete tests, {output.stat().st_size} bytes")
+    print(f"{len(sites)} {options.kind} sites, {len(complete)} complete tests, {output.stat().st_size} bytes")
 
 
 if __name__ == "__main__":
