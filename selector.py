@@ -101,10 +101,16 @@ def literal_shape(node):
     if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub))
             and isinstance(node.operand, ast.Constant) and type(node.operand.value) in (int, float)):
         return ("scalar", type(node.operand.value))
-    if isinstance(node, ast.Tuple):
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         children = tuple(literal_shape(x) for x in node.elts)
         if all(x is not None for x in children):
-            return ("tuple", children)
+            return (type(node).__name__, children)
+    if isinstance(node, ast.Attribute):
+        val = literal_shape(node.value) if not isinstance(node.value, ast.Name) else node.value.id
+        if val is not None:
+            return ("attribute", val)
+    if isinstance(node, ast.Name):
+        return ("name",)
     return None
 
 
