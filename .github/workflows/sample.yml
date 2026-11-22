@@ -1,0 +1,23 @@
+name: Score the sample
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - id: bench
+        name: Build and score all 30 commits
+        run: python3 benchmarks/run.py
+      - name: ${{ steps.bench.outputs.result }}
+        run: cat .bench/report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sample-report
+          path: .bench/report.json
