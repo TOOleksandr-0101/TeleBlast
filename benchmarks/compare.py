@@ -7,13 +7,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from score import evaluate_run
+from benchmarks.run import available_strategies
 
 
 def main():
     tests = json.loads(Path("sample/tests.json").read_text())["tests"]
     answers = json.loads(Path("sample/answers.json").read_text())["commits"]
     records = {}
-    for strategy in ("all", "static", "coverage", "hybrid", "precision"):
+    for strategy in available_strategies():
         proc = subprocess.run(["make", "-s", "-f", "benchmarks/limits.mk",
                                "strategy-run", "STRATEGY=" + strategy],
                               stdout=subprocess.PIPE, check=True, timeout=180)

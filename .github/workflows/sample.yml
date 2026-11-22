@@ -16,6 +16,11 @@ jobs:
         run: python3 benchmarks/run.py
       - name: ${{ steps.bench.outputs.result }}
         run: cat .bench/report.json
+      - name: ${{ steps.bench.outputs.precision }}
+        run: cat .bench/precision.json
+      - if: steps.bench.outputs.candidate != ''
+        name: ${{ steps.bench.outputs.candidate }}
+        run: cat .bench/candidate.json
       - name: Check patch handling and worker cost in the submission image
         run: |
           docker run --rm --network none --read-only --user 65534:65534 \
