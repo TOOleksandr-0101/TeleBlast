@@ -1,0 +1,69 @@
+name: Trace incomplete Python subprocess tests
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/subprocess.yml', 'tools/build_subprocess.py', 'tools/subprocess_trace/sitecustomize.py']
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tobymao/sqlglot
+          ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+          path: upstream
+          persist-credentials: false
+      - name: Observe file access across fresh Python processes
+        run: |
+          base=$(awk '$1=="FROM"{print $2;exit}' Dockerfile)
+          docker run --rm --cpus 4 --memory 8g -v "$PWD:/entry" -w /entry "$base" sh -ec '
+            pip install --disable-pip-version-check -q -r requirements.lock
+            PYTHONHASHSEED=0 OPENBLAS_NUM_THREADS=1 python tools/build_subprocess.py upstream maps/subprocess.json.gz'
+          python3 - <<'PY'
+          import gzip,json
+          m=json.load(gzip.open("maps/subprocess.json.gz","rt"))
+          assert m["revision"]=="eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
+          print(m["processes"])
+          assert all(node in m["processes"] for node in m["complete"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: subprocess
+          path: maps/subprocess.json.gz
+  publish:
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: subprocess
+          path: maps/
+      - name: Publish measured map
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          git diff --exit-code "$GITHUB_SHA" HEAD -- tools/build_subprocess.py tools/subprocess_trace/sitecustomize.py maps/coverage.json.gz tools/build_coverage.py requirements.lock
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add maps/subprocess.json.gz
+          if ! git diff --cached --quiet; then
+            git commit -m "Record observed paths from incomplete tests and their Python children"
+            for try in 1 2 3; do
+              git pull --rebase origin main
+              git diff --exit-code "$GITHUB_SHA" HEAD -- tools/build_subprocess.py tools/subprocess_trace/sitecustomize.py maps/coverage.json.gz tools/build_coverage.py requirements.lock
+              if git push origin HEAD:main; then exit 0; fi
+            done
+            exit 1
+          fi

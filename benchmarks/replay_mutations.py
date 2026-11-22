@@ -1,5 +1,6 @@
 """Replay frozen patches inside the actual submission image and use the official scorer."""
 import argparse
+import difflib
 import json
 import os
 from pathlib import Path
@@ -7,11 +8,13 @@ import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from score import evaluate_run
 from tools.phase3_cases import CASES
+from tools.pack_sources import REVISION
 
 
 def load_evidence(folder, cases=CASES):
@@ -20,12 +23,24 @@ def load_evidence(folder, cases=CASES):
     for path in folder.rglob("observed.json"):
         row = json.loads(path.read_text())
         name = row["name"]
-        if name not in names or name in received or not row["valid"]:
+        if (name not in names or name in received or not row["valid"]
+                or row["revision"] != REVISION):
             raise ValueError(f"unexpected or unusable labels: {path}")
         received[name] = (row, path.parent)
     if set(received) != names or received["baseline"][0]["failing"]:
         raise ValueError("incomplete frozen corpus or dirty control")
     return received
+
+
+def verify_transfer_patches(rows, cases):
+    """Reject labels paired with a different mutation under a reused case name."""
+    with ZipFile(ROOT / "maps/sources.zip") as pinned:
+        for case in cases:
+            source = pinned.read(case.path).decode("utf-8")
+            diff = difflib.unified_diff(source.splitlines(True), case.apply(source).splitlines(True),
+                                        "a/" + case.path, "b/" + case.path)
+            if (rows[case.name][1] / "change.patch").read_text(encoding="utf-8") != "".join(diff):
+                raise ValueError(f"{case.name}: evidence patch differs from frozen transfer case")
 
 
 def summarize(lines, tests, labels, details):
@@ -85,6 +100,8 @@ def main():
         from tools.transfer_cases import CASES as transfer_cases
         cases = transfer_cases
     rows = load_evidence(args.evidence, cases)
+    if args.corpus == "transfer":
+        verify_transfer_patches(rows, cases)
     supported = json.loads(subprocess.check_output(
         ["make", "-s", "-f", "benchmarks/limits.mk", "strategies"], cwd=ROOT))
     strategies = ["default", *(s for s in ("hybrid", "coverage", "precision", "candidate")

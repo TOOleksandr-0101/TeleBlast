@@ -1,0 +1,43 @@
+name: Replay comparison transfer
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run:
+        description: "Full-suite Comparison transfer corpus run ID"
+        default: "45020404382"
+        required: true
+  push:
+    branches: [main]
+    paths: ['.github/workflows/replay_transfer.yml', 'benchmarks/replay_mutations.py', 'benchmarks/independent.mk', 'selector.py', 'impact.py', 'scheduler.py', 'maps/**', 'Dockerfile', 'README.md']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: transfer-*
+          path: .bench/transfer
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.evidence_run || '45020404382' }}
+      - run: make build
+      - id: score
+        name: Score the actual image on all frozen mutations
+        run: python3 benchmarks/replay_mutations.py --corpus transfer .bench/transfer .bench/transfer-report.json
+      - name: ${{ steps.score.outputs.all }}
+        run: echo "All eight mutations"
+      - name: ${{ steps.score.outputs.transfer }}
+        run: echo "Seven predeclared comparison changes"
+      - name: ${{ steps.score.outputs.collection_control }}
+        run: echo "Independent collection-failure control"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scored-transfer-final
+          path: .bench/transfer-report.json
+          include-hidden-files: true
