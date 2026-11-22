@@ -1,5 +1,25 @@
 # Phase 3 evaluation
 
+## Submission decision
+
+The Docker default is **`registry`**. On Linux/amd64 it scored **213.975 simulated seconds**, caught every failing test across the 30 sample patches and produced 15,737 bytes of JSONL. Before promotion, three identical outputs had median selector CPU of 1.159346 s and a measured total of **215.134346 s**. The cold build took 6.704 s. This reduces simulated cost by **56.5%** relative to the previous Hybrid default. The 100–120 s sample target remains open. [Pre-promotion Docker verification](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45022311907)
+
+All five strategies were replayed on the same 30 independently labelled mutations. The table gives total scorer cost including the 300-second penalty per missed mutation. CPU is measured separately on the submission batch.
+
+| Strategy | Missed mutations | Omitted failing tests | Penalties | Independent simulated total |
+| --- | ---: | ---: | ---: | ---: |
+| Hybrid | 0 | 0 | 0 s | 735.277 s |
+| Coverage | 7 | 144 | 2,100 s | 2,567.849 s |
+| Precision | 8 | 67 | 2,400 s | 2,881.429 s |
+| Candidate | 0 | 0 | 0 s | 563.551 s |
+| **Registry** | **0** | **0** | **0 s** | **532.967 s** |
+
+The cheapest sample-only strategy, Precision, missed real faults across shared dialects, inherited settings and mapping entries. Registry had the lowest cost among the strategies with zero misses on both the public and independent sets. Four Docker reports cover the [original 14](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45022311813), [comparison changes and collection failure](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45022311812), [receiver controls](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45022311803) and [dictionary controls](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45022311996).
+
+The registry map distinguishes the execution of a stored lambda from creation of the dictionary that holds it. Narrowing requires a matching code contract, positive observations and unchanged surrounding AST. Changing a scalar/tuple table value can also use observed class readers when the table keys and surrounding construction are unchanged. Changes to factories and tables consumed during initialization retain conservative fallbacks. Lambda attribution saved 25.414 simulated seconds on the sample. Dictionary-reader attribution narrowed a separate tuple mutation from 1,029 tests to three while catching its failing test.
+
+The main remaining opportunity is to trace **which dictionary entries survive copying, inversion and factory construction**, then attribute reads of those derived tables to tests. Whole-table fallbacks still pull in long tests. Indirect native readers, reflective namespace access and changed import order remain generalization risks. The release is technically ready for submission. No official leaderboard run has been requested or scored here.
+
 The incoming revision `657b6f0` produced working plans, but its CI stopped before the strategy comparison. A development test imported `tools.mutation_validate` from the submission image. Runtime regressions now run against the packaged modules, and development tests run separately against a read-only checkout using the same Python image. Both sets passed on the [first repaired run](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45019719786).
 
 ## Precision reproduced on Linux

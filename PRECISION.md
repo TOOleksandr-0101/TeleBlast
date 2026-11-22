@@ -1,7 +1,8 @@
 # Precision strategy report
 
-`precision` is an experimental selector. The default remains `hybrid` because
-the independent mutation corpus is still too small to justify promotion.
+This document records the original Precision experiment. Its narrower selection
+missed independent failures in Phase 3. The current submission uses `registry`;
+see [the Phase 3 evaluation](PHASE3.md) for the promotion decision.
 
 ## Over-selection diagnosis
 

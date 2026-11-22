@@ -851,7 +851,7 @@ class Selector:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("/data"))
-    parser.add_argument("--strategy", choices=SUPPORTED_STRATEGIES, default="hybrid")
+    parser.add_argument("--strategy", choices=SUPPORTED_STRATEGIES, default="registry")
     args = parser.parse_args()
     tests = json.loads((args.data_dir / "tests.json").read_text(encoding="utf-8"))["tests"]
     selector = Selector(tests, args.strategy)

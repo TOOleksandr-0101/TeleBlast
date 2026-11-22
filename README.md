@@ -1,6 +1,8 @@
 # TeleBlast
 
-TeleBlast chooses sqlglot tests for independent unified diffs against commit `eb11aec4be8cb2122afe713a4816662c3f0fb2fa`. The default selector combines per-test Python line coverage, observed file reads, and a static dependency index. It emits one JSON line per patch and assigns every selected test to one worker. The numbered catalog and recorded test durations come from the input batch.
+TeleBlast chooses sqlglot tests for independent unified diffs against commit `eb11aec4be8cb2122afe713a4816662c3f0fb2fa`. The Docker default, `registry`, combines per-test coverage and static dependencies with clean-base observations of collection, comparisons, class readers and deferred callable executions. It emits one JSON line per patch and assigns every selected test to one worker. The numbered catalog and recorded test durations come from the input batch.
+
+**Verified sample:** 213.975 simulated seconds, zero missed commits. **Independent validation:** zero misses across 30 full-suite mutations with 359 failing-test observations. [Phase 3 results and CI links](PHASE3.md).
 
 ## Run
 
@@ -26,7 +28,7 @@ The root Dockerfile copies three Python modules and the prebuilt maps into the p
 4. `selector.py` translates node IDs and test-file paths into the batch's test numbers. For a function-body edit, hybrid selection takes the union of relevant line and function coverage, static symbol references and source readers. Structural or module-level edits widen selection to known dependent tests. When the compiled module matches byte for byte, including source positions, the selector retains observed source readers and incompletely traced tests. Fixtures use both observed reads and static links. The results for all changed files are combined. Unknown dependencies fall back to the full suite.
 5. `scheduler.py` works in integer milliseconds. It compares up to eight worker counts, accounting for the 2-second charge per occupied worker. It tries longest-test-first placement, skips counts whose lower bound cannot improve the price, and refines small sets with bounded partition search. Zero-duration tests stay in the plan. The report counts sample plans that reach a mathematical lower bound; for arbitrary inputs the algorithm is a heuristic.
 
-The experimental `precision` strategy parses both Python ASTs and narrows ordinary edits to executed statements. It expands complete predicates for short-circuit changes, widens new control flow to observed callers, and keeps dependency fallbacks for signatures, imports, module initialization and exception-handler structure. Explicit source readers and incomplete subprocess tests are indexed separately. See [PRECISION.md](PRECISION.md) for diagnostics, mutation evidence and known risks. Hybrid remains the default.
+The experimental `precision` strategy parses both Python ASTs and narrows ordinary edits to executed statements. It expands complete predicates for short-circuit changes, widens new control flow to observed callers, and keeps dependency fallbacks for signatures, imports, module initialization and exception-handler structure. Explicit source readers and incomplete subprocess tests are indexed separately. See [PRECISION.md](PRECISION.md) for diagnostics, mutation evidence and known risks. Hybrid, Precision and the intermediate Candidate remain available for comparison. Registry adds verified reads of class dictionaries and calls of their stored lambdas; its data and limits are described in [PHASE3.md](PHASE3.md).
 
 The static index was built from 250 Python modules and contains 6,650 definition spans and 62 fixture paths. The bundled source archive includes sqlglot's MIT license. The selector uses maps built from the pinned revision. The official sample labels are used only by the scorer and benchmark harness.
 
@@ -57,8 +59,10 @@ The benchmark starts with the supplied `make sample`. Three further runs use the
 | All tests, optimized worker count | 1104.510 | 0 |
 | Static dependencies and fixtures | 767.372 | 0 |
 | Changed-line coverage and file reads | 300.868 | 0 |
-| **Hybrid (submission default)** | **491.903** | **0** |
+| Hybrid (previous default) | 491.903 | 0 |
 | Precision (experimental) | 165.538 | 0 |
+| Candidate | 239.389 | 0 |
+| **Registry (submission default)** | **213.975** | **0** |
 
 | Linux/amd64 benchmark | Median selector CPU | Median selector wall time | Docker build |
 | --- | ---: | ---: | ---: |
@@ -67,7 +71,7 @@ The benchmark starts with the supplied `make sample`. Three further runs use the
 
 The hybrid saves **718.567 simulated seconds (59.4%)** against the measured starter. Simulated time plus the measured median selector CPU was **492.443 s**, below the brief's 1614.1-second target on the sample. The [second Linux map build](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014839162) preserved the default plans byte for byte. The coverage-only ablation changed from 300.868 s to 301.396 s. The [sample workflow](https://github.com/TOOleksandr-0101/TeleBlast/actions/workflows/sample.yml) records timings, all advertised strategies and the full report for each pushed revision.
 
-The hybrid default retains a function's other callers and transitive importers when a change could affect initialization. Exact-line coverage was faster on these 30 patches. New control flow can enter a line that none of the original tests reached, so this narrower mode remains an experiment. The hybrid selector's plans attain the scheduling lower bound on **30/30** commits and occupy **65,384 bytes** of stdout. Precision occupies **2,150 bytes**.
+The earlier hybrid selector retains a function's other callers and transitive importers when a change could affect initialization. Exact-line coverage was faster on these 30 patches. New control flow can enter a line that none of the original tests reached, so this narrower mode remains an experiment. The hybrid selector's plans attain the scheduling lower bound on **30/30** commits and occupy **65,384 bytes** of stdout. Precision occupies **2,150 bytes**.
 
 The committed map covers 234 executed Python files. Of the 1,620 numbered tests, 1,619 have complete traces. The remaining lazy-dialect-loading test starts its own interpreter; Precision retains it only for statically linked semantic changes. Coverage map version 2 also records 14 Python files with explicit source readers separately from ordinary import opens.
 
@@ -75,10 +79,4 @@ The committed map covers 234 executed Python files. Of the 1,620 numbered tests,
 
 The sample contains 30 independent patches. A clean sample run establishes correctness on those inputs. Changed import-time behavior, dynamic dispatch into unobserved code and readers running outside Python can still broaden the impact on other patches. Selection and scheduling can be changed independently. Keep the numeric test IDs supplied by the input catalog and the exact two JSON keys in the output. Update map readers and generators together when changing their schema. Keep the scorer and fixture labels outside the submitted image.
 
-Priorities for the next iteration:
-
-1. Validate changes on independent, generated mutations of the clean revision. Measure the 300-second miss penalty as well as savings before tightening selection. Producing fresh pytest labels costs development time.
-2. Attribute collection-time imports and class initialization to their consuming test modules. This can narrow the broadest fallback, at the cost of more complex handling of cached imports.
-3. Refine function-wide coverage using basic blocks when unchanged control flow can be established. This should help large parsers and generators. Retain the enclosing-function fallback for ambiguous insertions and changed branches.
-4. Trace native and external file readers where Python audit events cannot observe them. Better coverage can reduce the pool of tests retained on every change. Instrumenting subprocesses increases collection time and depends on the platform.
-5. Compare faster map encodings and lazy decompression on final-sized batches. This targets charged selector CPU. Retain the current format unless the CPU savings justify the added machinery.
+Next, trace the flow of individual dictionary entries through copies and parser/generator factories. This can reduce whole-registry fallback cost on hidden patches. Recheck the complete independent corpus before using that evidence to drop tests. The [Phase 3 report](PHASE3.md) includes the remaining risks and commands to reproduce the measurements.
