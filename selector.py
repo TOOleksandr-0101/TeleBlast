@@ -329,6 +329,13 @@ class Selector:
             self.member_reads = members.get("uses", {})
             self.member_groups = members.get("groups", ())
             self.member_nodes = members.get("nodes", ())
+            receivers = read_map(maps, "receivers")
+            self.receiver_sites = receivers.get("sites", {})
+            self.receiver_fields = set(receivers.get("tracked", ()))
+            receiver_nodes = receivers.get("nodes", ())
+            self.receiver_groups = [self.catalog.resolve(receiver_nodes[i] for i in grp)
+                                    for grp in receivers.get("groups", ())]
+            self.receiver_complete = self.catalog.resolve(receiver_nodes[i] for i in receivers.get("complete", ()))
 
     @lru_cache(maxsize=32)
     def source(self, path):
@@ -547,11 +554,54 @@ class Selector:
         if original.semantics == updated.semantics:
             return selected | protected
         ranges = [r for h in change.hunks for r in h.changes()]
+        # Constructing a scalar of the same builtin type cannot fail while
+        # the class body is executing. Follow observed readers of that slot
+        # (including reads at collection) instead of charging every test
+        # module that merely executed the declaration when importing it.
+        def literal_slot(model, span):
+            stmt = model.statement(*span)
+            if (not isinstance(stmt, (ast.Assign, ast.AnnAssign)) or
+                    not isinstance(stmt.value, ast.Constant) or
+                    model.scope(*span, "function") or not model.scope(*span, "class")):
+                return None
+            names = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            if len(names) != 1 or not isinstance(names[0], ast.Name):
+                return None
+            if not _contains(stmt.value, *span):
+                return None
+            return names[0].id, type(stmt.value.value), stmt.value, model.scope(*span, "class")
+
+        declaration_ranges = set()
+        for hunk in change.hunks:
+            old = list(hunk.edited_lines("old"))
+            new = list(hunk.edited_lines("new"))
+            if len(old) == len(new) == 1:
+                a, b = literal_slot(original, old[0]), literal_slot(updated, new[0])
+                if a and b and a[:2] == b[:2] and a[0] in self.member_reads:
+                    # An isolated scalar change with positive receiver evidence
+                    # can use concrete readers rather than unrelated classes'
+                    # reads of a same-named attribute.
+                    if len(change.hunks) == 1 and original.key(a[3]) == updated.key(b[3]):
+                        module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+                        scope = ".".join(k.removeprefix("class:") for k in original.key(a[3]))
+                        site = f"{module}.{scope}:{a[0]}"
+                        row = self.receiver_sites.get(site, {})
+                        if site in self.receiver_fields and "read" in row:
+                            previous = b[2].value
+                            try:
+                                b[2].value = a[2].value
+                                only_literal = original.semantics == updated.semantics
+                            finally:
+                                b[2].value = previous
+                            if only_literal:
+                                return protected | self.receiver_groups[row["read"]] | (self.all - self.receiver_complete)
+                    declaration_ranges.add(old[0])
         # Isolated collection detects function calls made while importing
         # test modules, before ordinary per-test line attribution began.
         collection_modules = set()
         for start, end, modules in self.collection.get("files", {}).get(path, ()):
-            if any(first <= end and start <= last for first, last in ranges):
+            if any(first <= end and start <= last for first, last in ranges
+                   if (first, last) not in declaration_ranges):
                 collection_modules.update(modules)
         protected.update(self.catalog.resolve(collection_modules))
         if self.collection:

@@ -110,7 +110,7 @@ def bind(rec):
                     by_name["*"].append(site)
             item = cache[id(cls)] = (cls, by_name)
         for site in item[1].get(member, ()):
-            if rec.mask:
+            if rec.mask and not rec.import_depth:
                 rec.batch.add((site, "read"))
             else:
                 rec.outside.add(site)

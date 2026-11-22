@@ -95,6 +95,13 @@ class Rewrite(ast.NodeTransformer):
 
 
 class Loader(SourceFileLoader):
+    def exec_module(self, module):
+        REC.import_depth += 1
+        try:
+            return super().exec_module(module)
+        finally:
+            REC.import_depth -= 1
+
     def get_code(self, fullname):
         path = self.get_filename(fullname)
         data = self.get_data(path)
@@ -123,9 +130,10 @@ class Recorder:
         self.rows = defaultdict(dict)
         self.outside = set()
         self.untraced_children = 0
+        self.import_depth = 0
 
     def observe(self, key, op, a, b):
-        if self.mask:
+        if self.mask and not self.import_depth:
             kind = relation(a, b)
             # Examine raw Python slots only for identity comparisons. The
             # other operators can call arbitrary user-defined methods.
