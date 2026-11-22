@@ -22,6 +22,12 @@ jobs:
             --tmpfs /tmp:rw,size=64m,mode=1777 --cpus 2 --memory 4096m \
             -v "$PWD/tests:/app/tests:ro" -w /app --entrypoint python \
             blast-radius-entry -m unittest discover -s tests -v
+      - name: Test development tools against the source checkout
+        run: |
+          docker run --rm --network none --read-only --user 65534:65534 \
+            --tmpfs /tmp:rw,size=64m,mode=1777 --cpus 2 --memory 4096m \
+            -v "$PWD:/checkout:ro" -w /checkout --entrypoint python \
+            blast-radius-entry -m unittest discover -s dev_tests -v
       - id: compare
         name: Compare selection strategies
         run: python3 benchmarks/compare.py
