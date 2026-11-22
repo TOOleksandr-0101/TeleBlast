@@ -1,0 +1,70 @@
+name: Profile isolated test collection
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/collection.yml', 'tools/build_collection.py']
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tobymao/sqlglot
+          ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+          path: upstream
+          persist-credentials: false
+      - name: Measure cold collection per module
+        run: |
+          base=$(awk '$1=="FROM"{print $2;exit}' Dockerfile)
+          docker run --rm --cpus 4 --memory 8g -v "$PWD:/entry" -w /entry "$base" sh -ec '
+            pip install --disable-pip-version-check -q -r requirements.lock
+            PYTHONHASHSEED=0 OPENBLAS_NUM_THREADS=1 python tools/build_collection.py upstream maps/collection.json.gz'
+          python3 - <<'PY'
+          import gzip,json
+          m=json.load(gzip.open("maps/collection.json.gz","rt"))
+          tests=json.load(open("sample/tests.json"))["tests"]
+          missing={t["file"] for t in tests}-set(m["complete"])
+          assert not missing, missing
+          assert m["files"].get("sqlglot/__init__.py")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collection
+          path: maps/collection.json.gz
+  publish:
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: collection
+          path: maps/
+      - name: Publish measured map
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          git diff --exit-code "$GITHUB_SHA" HEAD -- tools/build_collection.py tools/build_coverage.py requirements.lock
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add maps/collection.json.gz
+          if ! git diff --cached --quiet; then
+            git commit -m "Record cold pytest collection from the pinned revision"
+            for try in 1 2 3; do
+              git pull --rebase origin main
+              git diff --exit-code "$GITHUB_SHA" HEAD -- tools/build_collection.py tools/build_coverage.py requirements.lock
+              if git push origin HEAD:main; then exit 0; fi
+            done
+            exit 1
+          fi
