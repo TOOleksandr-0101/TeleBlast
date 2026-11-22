@@ -682,6 +682,42 @@ class Selector:
                 selected = selected - ((equal - uncertain) & self.observed_complete)
         return selected | protected
 
+    @cached_property
+    def _class_hierarchy(self):
+        bases_map = defaultdict(list)
+        if not self.source_zip:
+            return bases_map
+        for name in self.source_zip.namelist():
+            if name.startswith("sqlglot/") and name.endswith(".py"):
+                mod = ".".join(name[:-3].split("/")).removesuffix(".__init__")
+                try:
+                    tree = ast.parse(self.source_zip.read(name))
+                except Exception:
+                    continue
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ClassDef):
+                        for b in node.bases:
+                            bname = b.id if isinstance(b, ast.Name) else (b.attr if isinstance(b, ast.Attribute) else None)
+                            if bname:
+                                bases_map[bname].append(f"{mod}.{node.name}")
+        return bases_map
+
+    def _subclasses(self, target_name):
+        visited = set()
+        pending = [target_name]
+        subs = []
+        while pending:
+            curr = pending.pop()
+            if curr in visited:
+                continue
+            visited.add(curr)
+            for child in self._class_hierarchy.get(curr, ()):
+                subs.append(child)
+                cname = child.rsplit(".", 1)[-1]
+                if cname not in visited:
+                    pending.append(cname)
+        return list(set(subs))
+
     def _registry_select(self, change, original, updated, before, after):
         """Handle one unchanged-key class table entry; prove all other ASTs equal."""
         path = change.path
@@ -703,39 +739,34 @@ class Selector:
                 targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
                 if len(targets) != 1 or not isinstance(targets[0], ast.Name):
                     continue
-                for index, value in enumerate(stmt.value.values):
-                    if _contains(value, first, last):
-                        return model.key(cls), targets[0].id, stmt.value, index, value
+                return model.key(cls), targets[0].id, stmt.value, cls
             return None
 
         old, new = assignment(original, old_ranges), assignment(updated, new_ranges)
-        if old is None or new is None or old[:2] != new[:2] or old[3] != new[3]:
+        if old is None or new is None or old[:2] != new[:2]:
             return None
-        scope, name, _, index, lhs = old
-        rhs = new[4]
+        scope, name, old_dict, old_cls = old
+        new_dict = new[2]
+        if len(old_dict.values) != len(new_dict.values):
+            return None
+
+        diff_indices = []
+        for i, (ov, nv) in enumerate(zip(old_dict.values, new_dict.values)):
+            ok, nk = old_dict.keys[i], new_dict.keys[i]
+            if (ok is None) != (nk is None) or (ok is not None and _dump(ok) != _dump(nk)):
+                return None
+            if _dump(ov) != _dump(nv):
+                diff_indices.append(i)
+        if len(diff_indices) != 1:
+            return None
+        index = diff_indices[0]
+        lhs, rhs = old_dict.values[index], new_dict.values[index]
+
         protected = (self.source_observers(path) | self.catalog.resolve([path]) |
                      self.coverage.untraced | (self.all - self.registry_complete))
         if any(k.startswith("function:") for k in scope):
             return None
-        module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
-        class_name = ".".join(k.removeprefix("class:") for k in scope)
-        field = f"{module}.{class_name}:{name}"
-        data_shape = literal_shape(lhs)
-        if (data_shape is not None and data_shape == literal_shape(rhs)
-                and field in self.registry_fields):
-            row = self.registry_sites.get(field, {})
-            if "read" not in row:
-                return None
-            new[2].values[index] = lhs
-            try:
-                only_value = original.semantics == _dump(updated.tree)
-            finally:
-                new[2].values[index] = rhs
-            if only_value:
-                return protected | self.registry_groups[row["read"]]
-        # A copied dictionary retains the original function object. Its
-        # definition line can be covered during every import, while its body
-        # runs only when that specific callable is invoked later.
+
         def lambdas(node, ranges):
             return [fn for fn in ast.walk(node) if isinstance(fn, ast.Lambda)
                     and all(_contains(fn.body, x, y) for x, y in ranges)]
@@ -755,6 +786,43 @@ class Selector:
                     old_contract = lambda_contract(before, path, old_fn.lineno)
                     if old_contract is not None and old_contract == lambda_contract(after, path, new_fn.lineno):
                         return protected | self.registry_groups[row["called"]]
+
+        data_shape = literal_shape(lhs)
+        if data_shape is None or data_shape != literal_shape(rhs):
+            return None
+
+        new_dict.values[index] = lhs
+        try:
+            only_value = original.semantics == _dump(updated.tree)
+        finally:
+            new_dict.values[index] = rhs
+        if not only_value:
+            return None
+
+        module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+        class_name = ".".join(k.removeprefix("class:") for k in scope)
+        field = f"{module}.{class_name}:{name}"
+
+        if field in self.registry_fields:
+            row = self.registry_sites.get(field, {})
+            if "read" in row:
+                return protected | self.registry_groups[row["read"]]
+
+        readers = set()
+        direct_name = scope[-1].removeprefix("class:")
+        for sub in self._subclasses(direct_name):
+            sub_field = f"{sub}:{name}"
+            if sub_field in self.registry_fields:
+                sub_row = self.registry_sites.get(sub_field, {})
+                if "read" in sub_row:
+                    readers.update(self.registry_groups[sub_row["read"]])
+
+        for s_name in [direct_name, *([scope[0].removeprefix("class:")] if len(scope) > 1 else [])]:
+            readers.update(self.static_tests("symbols", s_name))
+        readers.update(self.coverage.hits(path, old_cls.lineno, old_cls.end_lineno))
+
+        if readers:
+            return protected | readers
         return None
 
     def python_tests(self, change):
