@@ -671,7 +671,8 @@ class Selector:
                 for target in targets:
                     if isinstance(target, ast.Name) and target.id in self.member_reads:
                         group = self.member_groups[self.member_reads[target.id]]
-                        protected.update(self.catalog.resolve(self.member_nodes[i] for i in group))
+                        reads = self.catalog.resolve(self.member_nodes[i] for i in group)
+                        protected.update(reads & (self.static_tests("files", path) or self.all))
 
         if self.observed_sites:
             edit = comparison_edit(original.tree, updated.tree)
