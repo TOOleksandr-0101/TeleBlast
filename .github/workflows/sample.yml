@@ -43,6 +43,17 @@ jobs:
         run: python3 benchmarks/compare.py
       - name: ${{ steps.compare.outputs.result }}
         run: cat .bench/strategies.json
+      - id: profiles
+        name: Isolate the contribution of each clean-base profile
+        run: |
+          summary=$(docker run --rm --network none --read-only --cpus 2 --memory 4096m \
+            --tmpfs /tmp:rw,size=64m,mode=1777 --user 65534:65534 \
+            -v "$PWD:/entry:ro" -w /entry --entrypoint python \
+            blast-radius-entry benchmarks/profile_ablation.py)
+          echo "result=$summary" >> "$GITHUB_OUTPUT"
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+      - name: ${{ steps.profiles.outputs.result }}
+        run: echo 'Scores include 300 seconds per missed commit'
       - uses: actions/upload-artifact@v4
         with:
           name: sample-report

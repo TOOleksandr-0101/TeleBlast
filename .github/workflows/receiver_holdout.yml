@@ -1,0 +1,89 @@
+name: Receiver settings holdout
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run:
+        description: "Prior successful run ID to replay. Leave empty for fresh full-suite labels."
+        required: false
+  push:
+    branches: [main]
+    paths: ['.github/workflows/receiver_holdout.yml', 'tools/receiver_cases.py']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  label:
+    if: ${{ !inputs.evidence_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        case: [baseline, base-dialect-index, base-generator-values, postgres-placeholder, bigquery-tokenizer]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tobymao/sqlglot
+          ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+          path: pinned
+          persist-credentials: false
+      - id: observed
+        name: Run full pinned pytest suite and verify completeness
+        env:
+          CASE: ${{ matrix.case }}
+        run: |
+          mkdir -p .bench/evidence
+          image=$(awk '$1 == "FROM" {print $2; exit}' Dockerfile)
+          docker run --rm --cpus 2 --memory 4g -e CASE -e PYTHON_CPU_COUNT=2 -e OPENBLAS_NUM_THREADS=1 \
+            -v "$PWD:/entry:ro" -v "$PWD/.bench/evidence:/result" -w /entry "$image" sh -ec '
+              python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.lock
+              GITHUB_OUTPUT=/result/ci-output python tools/receiver_cases.py measure "$CASE" /entry/pinned /result'
+          cat .bench/evidence/ci-output >> "$GITHUB_OUTPUT"
+      - name: ${{ steps.observed.outputs.case_result }}
+        run: cat .bench/evidence/observed.json
+      - name: Observed ${{ steps.observed.outputs.labels }}
+        run: echo "Exact labels in the receiver artifact"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: receiver-${{ matrix.case }}
+          path: .bench/evidence
+          include-hidden-files: true
+  replay:
+    needs: label
+    if: ${{ always() && (needs.label.result == 'success' || inputs.evidence_run) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: receiver-*
+          path: .bench/receiver
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.evidence_run || github.run_id }}
+      - run: make build
+      - id: replay
+        name: Score the production image on frozen receiver labels
+        run: python3 benchmarks/replay_mutations.py --corpus receiver .bench/receiver .bench/receiver-report.json
+      - name: ${{ steps.replay.outputs.receiver }}
+        run: echo "Four held-out changes to scalar class settings"
+      - name: ${{ steps.replay.outputs.base_dialect_index }}
+        run: echo "Dialect base class"
+      - name: ${{ steps.replay.outputs.base_generator_values }}
+        run: echo "Generator base class"
+      - name: ${{ steps.replay.outputs.postgres_placeholder }}
+        run: echo "Generator subclass override"
+      - name: ${{ steps.replay.outputs.bigquery_tokenizer }}
+        run: echo "Nested tokenizer override"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scored-receiver-holdout
+          path: .bench/receiver-report.json
+          include-hidden-files: true

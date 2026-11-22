@@ -93,14 +93,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("evidence", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--corpus", choices=("phase3", "transfer"), default="phase3")
+    parser.add_argument("--corpus", choices=("phase3", "transfer", "receiver"), default="phase3")
     args = parser.parse_args()
     cases = CASES
     if args.corpus == "transfer":
         from tools.transfer_cases import CASES as transfer_cases
         cases = transfer_cases
+    elif args.corpus == "receiver":
+        from tools.receiver_cases import CASES as receiver_cases
+        cases = receiver_cases
     rows = load_evidence(args.evidence, cases)
-    if args.corpus == "transfer":
+    if args.corpus != "phase3":
         verify_transfer_patches(rows, cases)
     supported = json.loads(subprocess.check_output(
         ["make", "-s", "-f", "benchmarks/limits.mk", "strategies"], cwd=ROOT))
@@ -127,7 +130,7 @@ def main():
             values.append(f"{name} {s['missed_cases']}miss/{s['missed_tests']}tests/{s['penalized_seconds']:.3f}s")
         text = group + ": " + ", ".join(values)
         outputs[group.replace("-", "_")] = text
-    if args.corpus == "transfer":
+    if args.corpus != "phase3":
         for case in cases:
             values = []
             for strategy, row in result.items():
