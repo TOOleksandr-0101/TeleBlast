@@ -1,0 +1,21 @@
+name: Replay dictionary holdout
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run:
+        description: "Full-suite Class dictionary holdout run ID"
+        default: "45021866693"
+        required: true
+  push:
+    branches: [main]
+    paths: ['.github/workflows/replay_dictionary.yml', 'benchmarks/replay_mutations.py', 'benchmarks/independent.mk', 'selector.py', 'impact.py', 'scheduler.py', 'maps/**', 'Dockerfile', 'README.md', 'PHASE3.md']
+permissions:
+  actions: read
+  contents: read
+jobs:
+  dictionary:
+    uses: ./.github/workflows/receiver_holdout.yml
+    with:
+      corpus: dictionary
+      cases: '["baseline","hive-type-literal","snowflake-column-tuple","mysql-registered-lambda","presto-factory-result"]'
+      evidence_run: ${{ inputs.evidence_run || '45021866693' }}
