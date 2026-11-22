@@ -63,6 +63,10 @@ class HybridSelectionTests(unittest.TestCase):
     def test_coverage_uses_node_ids_and_keeps_incomplete_tests(self):
         self.assertEqual(self.select("    value = 1", "    value = 2"), {2, 1})
 
+    def test_identical_compiled_code_still_selects_source_readers(self):
+        self.selector.coverage.readers["src.py"] = {3}
+        self.assertEqual(self.select("    value = 1", "    value = 1  # note"), {1, 3})
+
     def test_multifile_patch_combines_coverage_and_fixture_readers(self):
         fixture = "--- a/data.sql\n+++ b/data.sql\n@@ -1 +1 @@\n-A\n+B\n"
         self.assertEqual(self.select("    value = 1", "    value = 2", fixture), {0, 1, 2})

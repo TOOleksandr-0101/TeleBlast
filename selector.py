@@ -5,7 +5,9 @@ from bisect import bisect_left
 from collections import defaultdict
 from functools import lru_cache
 import gzip
+import hashlib
 import json
+import marshal
 import math
 from pathlib import Path
 import sys
@@ -93,9 +95,17 @@ class Selector:
     def static_tests(self, field, key):
         return self.catalog.resolve(self.static.get(field, {}).get(key, ()))
 
+    @lru_cache(maxsize=32)
+    def original_code_digest(self, path):
+        code = compile(self.source(path).encode("utf-8"), path, "exec", dont_inherit=True)
+        return hashlib.sha256(marshal.dumps(code)).digest()
+
     def function(self, path, first, last):
-        owners = (span for span in self.static.get("spans", {}).get(path, ())
-                  if span[3] == "function" and span[0] < first and last <= span[1])
+        owners = (
+            span for span in self.static.get("spans", {}).get(path, ())
+            if span[3] == "function" and span[0] < first and last <= span[1]
+            and (len(span) < 5 or span[4] <= first)
+        )
         return min(owners, key=lambda span: span[1] - span[0], default=None)
 
     def python_tests(self, change):
@@ -106,8 +116,8 @@ class Selector:
             return set()
         try:
             # Syntax errors in a function can prevent collection of every importer.
-            compile(after, path, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError, RecursionError) as exc:
+            code = compile(after.encode("utf-8"), path, "exec", dont_inherit=True)
+        except (SyntaxError, ValueError, OverflowError, RecursionError) as exc:
             raise UnsupportedPatch("invalid patched Python") from exc
 
         dependent = self.static_tests("files", path) | self.catalog.resolve([path])
@@ -115,6 +125,10 @@ class Selector:
         readers = coverage.readers.get(path, set())
         if not coverage.available or self.strategy == "static":
             return dependent or self.all
+        if self.strategy == "hybrid" and hashlib.sha256(marshal.dumps(code)).digest() == self.original_code_digest(path):
+            # Bytecode, constants and debugging positions matched. Source-text
+            # readers and incompletely observed tests may still see the edit.
+            return readers | coverage.untraced
 
         result = readers | self.catalog.resolve([path])
         intervals = [interval for hunk in change.hunks for interval in hunk.changes()]

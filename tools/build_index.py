@@ -155,7 +155,8 @@ def build(root):
             if isinstance(node, DEFINITIONS):
                 first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
                 declarations.append((first, node.end_lineno, node.name,
-                                     "class" if isinstance(node, ast.ClassDef) else "function"))
+                                     "class" if isinstance(node, ast.ClassDef) else "function",
+                                     node.body[0].lineno))
                 if path.startswith("sqlglot/"):
                     defined.add(node.name)
         spans[path] = sorted(declarations)

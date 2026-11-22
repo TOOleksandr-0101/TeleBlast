@@ -75,7 +75,8 @@ class Recorder:
             filename, mode, flags = args
             if not isinstance(filename, str) or flags & os.O_WRONLY:
                 return
-            path = self.relative(filename)
+            # Test setup can change the working directory between relative opens.
+            path = self.relative(os.path.abspath(filename))
             if path.startswith(("sqlglot/", "tests/")) and "__pycache__/" not in path:
                 self.files[path] = self.files.get(path, 0) | self.mask
 
