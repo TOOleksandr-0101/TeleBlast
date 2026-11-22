@@ -21,6 +21,11 @@ jobs:
       - if: steps.bench.outputs.candidate != ''
         name: ${{ steps.bench.outputs.candidate }}
         run: cat .bench/candidate.json
+      - id: ready
+        name: Inspect the submission image and repository budget
+        run: python3 benchmarks/readiness.py
+      - name: ${{ steps.ready.outputs.result }}
+        run: cat .bench/readiness.json
       - name: Check patch handling and worker cost in the submission image
         run: |
           docker run --rm --network none --read-only --user 65534:65534 \
