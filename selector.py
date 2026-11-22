@@ -12,6 +12,7 @@ import marshal
 import math
 from pathlib import Path
 import sys
+from types import CodeType
 from zipfile import ZipFile
 
 from impact import UnsupportedPatch, parse_patch
@@ -20,7 +21,8 @@ from scheduler import schedule
 
 MAPS = Path(__file__).resolve().parent / "maps"
 REVISION = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
-SUPPORTED_STRATEGIES = ("all", "static", "coverage", "hybrid", "precision", "candidate")
+SUPPORTED_STRATEGIES = ("all", "static", "coverage", "hybrid", "precision", "candidate", "registry")
+CANDIDATES = {"candidate", "registry"}
 
 
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -90,6 +92,36 @@ def relation_result(op, relation):
     truth = {"Lt": {"less"}, "LtE": {"less", "equal"},
              "Gt": {"greater"}, "GtE": {"greater", "equal"}}
     return relation in truth[op] if op in truth else None
+
+
+def literal_shape(node):
+    """Only eager data constructors with inert, same-typed immutable leaves."""
+    if isinstance(node, ast.Constant):
+        return ("scalar", type(node.value))
+    if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub))
+            and isinstance(node.operand, ast.Constant) and type(node.operand.value) in (int, float)):
+        return ("scalar", type(node.operand.value))
+    if isinstance(node, ast.Tuple):
+        children = tuple(literal_shape(x) for x in node.elts)
+        if all(x is not None for x in children):
+            return ("tuple", children)
+    return None
+
+
+def lambda_contract(source, path, first_line):
+    """Refuse ambiguous lambdas, closure/layout and generator/coroutine changes."""
+    matches = []
+    pending = [compile(source.encode("utf-8"), path, "exec", dont_inherit=True)]
+    while pending:
+        code = pending.pop()
+        if code.co_name == "<lambda>" and code.co_firstlineno == first_line:
+            matches.append(code)
+        pending.extend(x for x in code.co_consts if isinstance(x, CodeType))
+    if len(matches) == 1:
+        code = matches[0]
+        return (code.co_freevars, code.co_cellvars, code.co_flags, code.co_argcount,
+                code.co_kwonlyargcount, code.co_posonlyargcount)
+    return None
 
 
 def read_map(directory, name):
@@ -314,10 +346,10 @@ class Selector:
         self.all = self.catalog.numbers
         self.strategy = strategy
         self.static = read_map(maps, "static") if strategy != "all" else {}
-        data = read_map(maps, "coverage") if strategy in ("coverage", "hybrid", "precision", "candidate") else {}
+        data = read_map(maps, "coverage") if strategy in {"coverage", "hybrid", "precision"} | CANDIDATES else {}
         self.coverage = Coverage(data, self.catalog)
         self.source_zip = ZipFile(maps / "sources.zip") if strategy != "all" else None
-        if strategy == "candidate":
+        if strategy in CANDIDATES:
             obs = read_map(maps, "observations")
             nodes = obs.get("nodes", ())
             self.observed_sites = obs.get("sites", {})
@@ -339,6 +371,14 @@ class Selector:
             children = read_map(maps, "subprocess")
             self.child_complete = self.catalog.resolve(children.get("complete", ()))
             self.child_paths = children.get("paths", {})
+        if strategy == "registry":
+            profile = read_map(maps, "registries")
+            nodes = profile.get("nodes", ())
+            self.registry_sites = profile.get("sites", {})
+            self.registry_fields = set(profile.get("tracked", ()))
+            self.registry_complete = self.catalog.resolve(nodes[i] for i in profile.get("complete", ()))
+            self.registry_groups = [self.catalog.resolve(nodes[i] for i in g)
+                                    for g in profile.get("groups", ())]
 
     @lru_cache(maxsize=32)
     def source(self, path):
@@ -408,8 +448,12 @@ class Selector:
         except (SyntaxError, ValueError, OverflowError, RecursionError) as exc:
             raise UnsupportedPatch("invalid patched Python") from exc
 
+        if self.strategy == "registry" and self.registry_sites and self.coverage.available:
+            observed = self._registry_select(change, original, updated, before, after)
+            if observed is not None:
+                return observed
         selected = self._precision_select(change, original, updated)
-        if self.strategy == "candidate":
+        if self.strategy in CANDIDATES:
             return self._candidate_select(change, original, updated, selected)
         return selected
 
@@ -638,6 +682,81 @@ class Selector:
                 selected = selected - ((equal - uncertain) & self.observed_complete)
         return selected | protected
 
+    def _registry_select(self, change, original, updated, before, after):
+        """Handle one unchanged-key class table entry; prove all other ASTs equal."""
+        path = change.path
+        old_ranges = [span for hunk in change.hunks for span in hunk.edited_lines("old")]
+        new_ranges = [span for hunk in change.hunks for span in hunk.edited_lines("new")]
+        if not old_ranges or not new_ranges:
+            return None
+
+        def assignment(model, ranges):
+            first = min(a for a, _ in ranges)
+            last = max(b for _, b in ranges)
+            cls = model.scope(first, last, "class")
+            if cls is None:
+                return None
+            for stmt in cls.body:
+                if (not isinstance(stmt, (ast.Assign, ast.AnnAssign))
+                        or not isinstance(stmt.value, ast.Dict) or not _contains(stmt, first, last)):
+                    continue
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+                    continue
+                for index, value in enumerate(stmt.value.values):
+                    if _contains(value, first, last):
+                        return model.key(cls), targets[0].id, stmt.value, index, value
+            return None
+
+        old, new = assignment(original, old_ranges), assignment(updated, new_ranges)
+        if old is None or new is None or old[:2] != new[:2] or old[3] != new[3]:
+            return None
+        scope, name, _, index, lhs = old
+        rhs = new[4]
+        protected = (self.source_observers(path) | self.catalog.resolve([path]) |
+                     self.coverage.untraced | (self.all - self.registry_complete))
+        if any(k.startswith("function:") for k in scope):
+            return None
+        module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+        class_name = ".".join(k.removeprefix("class:") for k in scope)
+        field = f"{module}.{class_name}:{name}"
+        data_shape = literal_shape(lhs)
+        if (data_shape is not None and data_shape == literal_shape(rhs)
+                and field in self.registry_fields):
+            row = self.registry_sites.get(field, {})
+            if "read" not in row:
+                return None
+            new[2].values[index] = lhs
+            try:
+                only_value = original.semantics == _dump(updated.tree)
+            finally:
+                new[2].values[index] = rhs
+            if only_value:
+                return protected | self.registry_groups[row["read"]]
+        # A copied dictionary retains the original function object. Its
+        # definition line can be covered during every import, while its body
+        # runs only when that specific callable is invoked later.
+        def lambdas(node, ranges):
+            return [fn for fn in ast.walk(node) if isinstance(fn, ast.Lambda)
+                    and all(_contains(fn.body, x, y) for x, y in ranges)]
+        for old_fn in lambdas(lhs, old_ranges):
+            site = f"lambda:{path}:{old_fn.lineno}:{old_fn.col_offset}"
+            row = self.registry_sites.get(site, {})
+            if "called" not in row:
+                continue
+            for new_fn in lambdas(rhs, new_ranges):
+                body = new_fn.body
+                new_fn.body = old_fn.body
+                try:
+                    only_body = original.semantics == _dump(updated.tree)
+                finally:
+                    new_fn.body = body
+                if only_body:
+                    old_contract = lambda_contract(before, path, old_fn.lineno)
+                    if old_contract is not None and old_contract == lambda_contract(after, path, new_fn.lineno):
+                        return protected | self.registry_groups[row["called"]]
+        return None
+
     def python_tests(self, change):
         path = change.path
         before = self.source(path)
@@ -690,13 +809,13 @@ class Selector:
     def file_tests(self, change):
         path = change.path
         if path.endswith(".py"):
-            if self.strategy in {"precision", "candidate"}:
+            if self.strategy in {"precision"} | CANDIDATES:
                 return self.precision_python_tests(change)
             return self.python_tests(change)
         readers = self.coverage.readers.get(path, set())
         owners = self.static_tests("fixtures", path)
-        if self.strategy in {"precision", "candidate"}:
-            if self.strategy == "candidate":
+        if self.strategy in {"precision"} | CANDIDATES:
+            if self.strategy in CANDIDATES:
                 collecting = self.catalog.resolve(self.collection.get("resources", {}).get(path, ()))
                 if collecting:
                     return owners | readers | collecting | self.coverage.untraced

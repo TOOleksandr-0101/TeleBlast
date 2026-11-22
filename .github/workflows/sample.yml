@@ -21,6 +21,9 @@ jobs:
       - if: steps.bench.outputs.candidate != ''
         name: ${{ steps.bench.outputs.candidate }}
         run: cat .bench/candidate.json
+      - if: steps.bench.outputs.registry != ''
+        name: ${{ steps.bench.outputs.registry }}
+        run: cat .bench/registry.json
       - id: ready
         name: Inspect the submission image and repository budget
         run: python3 benchmarks/readiness.py

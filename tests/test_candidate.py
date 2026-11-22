@@ -91,6 +91,38 @@ class CandidateTests(unittest.TestCase):
         sel.receiver_fields.clear()  # observed at import or unprofiled
         self.assertEqual(sel.select(patch), set(range(6)))
 
+    def test_class_table_value_and_deferred_call_are_distinguished(self):
+        nodes = [t["id"] for t in self.catalog]
+        source = ("class Engine:\n    TABLE = {\n"
+                  "        'payload': (1, False),\n"
+                  "        'handler': lambda x: x + 1,\n"
+                  "        'factory': bool(True),\n    }\n")
+        with ZipFile(self.root / "sources.zip", "w") as f:
+            f.writestr("src.py", source)
+        line = source.splitlines()[3]
+        sites = {"src.Engine:TABLE": {"read": 0}, f"lambda:src.py:4:{line.index('lambda')}": {"called": 1}}
+        record = {"revision": REVISION, "nodes": nodes, "complete": list(range(5)),
+                  "tracked": ["src.Engine:TABLE"], "groups": [[1], [2]], "sites": sites}
+        with gzip.open(self.root / "registries.json.gz", "wt") as f:
+            json.dump(record, f)
+        sel = Selector(self.catalog, "registry", self.root)
+        self.addCleanup(sel.source_zip.close)
+
+        def changed(lineno, old, new):
+            patch = self.root / "table.patch"
+            old_line = source.splitlines()[lineno - 1]
+            new_line = old_line.replace(old, new)
+            patch.write_text(f"--- a/src.py\n+++ b/src.py\n@@ -{lineno} +{lineno} @@\n-{old_line}\n+{new_line}\n")
+            return sel.select(patch)
+
+        self.assertEqual(changed(3, "(1, False)", "(2, False)"), {1, 5})
+        self.assertEqual(changed(4, "x + 1", "x + 2"), {2, 5})
+        self.assertEqual(changed(3, "'payload'", "'new-key'"), set(range(6)))
+        self.assertEqual(changed(5, "True", "False"), set(range(6)))
+        self.assertEqual(changed(4, "x + 1", "(lambda: x)()"), set(range(6)))
+        sel.registry_fields.clear()
+        self.assertEqual(changed(3, "(1, False)", "(2, False)"), set(range(6)))
+
 
 if __name__ == "__main__":
     unittest.main()

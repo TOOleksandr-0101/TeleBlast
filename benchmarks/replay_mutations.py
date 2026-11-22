@@ -110,8 +110,7 @@ def main():
         verify_transfer_patches(rows, cases)
     supported = json.loads(subprocess.check_output(
         ["make", "-s", "-f", "benchmarks/limits.mk", "strategies"], cwd=ROOT))
-    strategies = ["default", *(s for s in ("hybrid", "coverage", "precision", "candidate")
-                               if s in supported)]
+    strategies = ["default", *(s for s in supported if s not in {"all", "static"})]
     with TemporaryDirectory() as tmp:
         data = Path(tmp).resolve()
         (data / "commits").mkdir()

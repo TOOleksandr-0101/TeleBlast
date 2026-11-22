@@ -8,7 +8,7 @@ on:
         required: true
   push:
     branches: [main]
-    paths: ['.github/workflows/replay_transfer.yml', 'benchmarks/replay_mutations.py', 'benchmarks/independent.mk', 'selector.py', 'impact.py', 'scheduler.py', 'maps/**', 'Dockerfile', 'README.md']
+    paths: ['.github/workflows/replay_transfer.yml', 'benchmarks/replay_mutations.py', 'benchmarks/independent.mk', 'selector.py', 'impact.py', 'scheduler.py', 'maps/**', 'Dockerfile', 'README.md', 'PHASE3.md']
 permissions:
   contents: read
   actions: read
