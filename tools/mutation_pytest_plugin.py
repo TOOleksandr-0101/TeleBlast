@@ -32,11 +32,17 @@ def pytest_configure(config: Any) -> None:
 def pytest_runtest_logreport(report: Any) -> None:
     if report.failed:
         _append({"kind": "test", "nodeid": report.nodeid, "when": report.when})
+    elif report.skipped:
+        _append({"kind": "skip", "nodeid": report.nodeid, "when": report.when})
 
 
 def pytest_collectreport(report: Any) -> None:
     if report.failed:
         _append({"kind": "collect", "nodeid": report.nodeid})
+
+
+def pytest_runtest_logfinish(nodeid: str, location: Any) -> None:
+    _append({"kind": "finished", "nodeid": nodeid})
 
 
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:

@@ -517,6 +517,9 @@ def run_pytest(
         {
             "PYTHONPATH": os.pathsep.join(python_path),
             "PYTHONHASHSEED": "0",
+            "SKIP_INTEGRATION": "0",
+            "PYTHON_CPU_COUNT": "2",
+            "OPENBLAS_NUM_THREADS": "1",
             "TELEBLAST_MUTATION_REPORT": str(report_path),
         }
     )
@@ -527,6 +530,7 @@ def run_pytest(
         "-q",
         "--tb=short",
         "--disable-warnings",
+        "--continue-on-collection-errors",
         "-p",
         "mutation_pytest_plugin",
         *targets,

@@ -1,0 +1,116 @@
+name: Independent mutation corpus
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run:
+        description: "Prior run ID to replay its frozen pytest observations (empty collects fresh labels)"
+        required: false
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mutations.yml'
+      - 'tools/phase3_cases.py'
+      - 'tools/phase3_lab.py'
+      - 'tools/mutation_validate.py'
+      - 'tools/mutation_pytest_plugin.py'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  measure:
+    if: ${{ !inputs.evidence_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        case: [baseline, collection-import, argument-default, new-branch, dynamic-dispatch, dialect-registry, exception-handler, class-attribute, source-introspection, fixture-append, changed-predicate, module-initialization, signature-keyword, fixture-reader, generator-dispatch]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tobymao/sqlglot
+          ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+          path: pinned
+          persist-credentials: false
+      - id: measure
+        name: Label all numbered tests in the pinned environment
+        env:
+          CASE: ${{ matrix.case }}
+        run: |
+          mkdir -p .bench/evidence
+          image=$(awk '$1 == "FROM" {print $2; exit}' Dockerfile)
+          docker run --rm --cpus 2 --memory 4g -e CASE -e PYTHON_CPU_COUNT=2 -e OPENBLAS_NUM_THREADS=1 \
+            -v "$PWD:/entry:ro" -v "$PWD/.bench/evidence:/result" -w /entry "$image" sh -ec '
+              python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.lock
+              GITHUB_OUTPUT=/result/ci-output python tools/phase3_lab.py measure "$CASE" /entry/pinned /result'
+          cat .bench/evidence/ci-output >> "$GITHUB_OUTPUT"
+      - name: ${{ steps.measure.outputs.case_result }}
+        run: cat .bench/evidence/observed.json
+      - name: Observed ${{ steps.measure.outputs.labels }}
+        run: echo "Observed test numbers recorded"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-${{ matrix.case }}
+          path: .bench/evidence
+          include-hidden-files: true
+  compare:
+    needs: measure
+    if: ${{ always() && (needs.measure.result == 'success' || inputs.evidence_run) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-*
+          path: .bench/labels
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.evidence_run || github.run_id }}
+      - id: totals
+        name: Score plans against observed failures
+        run: |
+          image=$(awk '$1 == "FROM" {print $2; exit}' Dockerfile)
+          mkdir -p .bench/compared
+          docker run --rm --network none -v "$PWD:/entry:ro" -w /entry \
+            -v "$PWD/.bench/compared:/results" -e GITHUB_OUTPUT=/results/ci-output \
+            "$image" python tools/phase3_lab.py compare .bench/labels /results
+          cat .bench/compared/ci-output >> "$GITHUB_OUTPUT"
+      - name: ${{ steps.totals.outputs.collection_import }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.argument_default }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.new_branch }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.dynamic_dispatch }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.dialect_registry }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.exception_handler }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.class_attribute }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.source_introspection }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.fixture_append }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.changed_predicate }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.module_initialization }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.signature_keyword }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.fixture_reader }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.generator_dispatch }}
+        run: echo "See comparison.json for per-test detail"
+      - name: ${{ steps.totals.outputs.summary }}
+        run: cat .bench/compared/ci-output >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-comparison
+          path: .bench/compared/comparison.json
+          include-hidden-files: true
