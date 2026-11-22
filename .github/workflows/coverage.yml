@@ -1,0 +1,66 @@
+name: Rebuild Linux coverage
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/coverage.yml']
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tobymao/sqlglot
+          ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+          path: pinned-sqlglot
+          persist-credentials: false
+      - name: Install the recorded environment and trace the pinned suite
+        run: |
+          image=$(awk '$1 == "FROM" {print $2; exit}' Dockerfile)
+          docker run --rm --cpus 4 --memory 8g -v "$PWD:/entry" -w /entry "$image" sh -ec '
+            python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.lock
+            PYTHONHASHSEED=0 OPENBLAS_NUM_THREADS=1 PYTHON_CPU_COUNT=2 python -X cpu_count=2 tools/build_coverage.py pinned-sqlglot maps/coverage.json.gz'
+      - name: Verify map against numbered tests and validate the resulting plans
+        run: |
+          python3 - <<'PY'
+          import gzip, json
+          with gzip.open("maps/coverage.json.gz", "rt") as source:
+              m = json.load(source)
+          with open("sample/tests.json") as f:
+              expected = {t["id"] for t in json.load(f)["tests"]}
+          complete = {m["nodes"][i] for i in m["complete"]} & expected
+          print(f"{len(complete)} of {len(expected)} numbered tests fully traced")
+          assert len(complete) >= .95 * len(expected) and m["lines"] and m["fixtures"]
+          PY
+          make sample
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-coverage
+          path: maps/coverage.json.gz
+  publish-map:
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-coverage
+          path: maps/
+      - name: Commit the verified map directly to main
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add maps/coverage.json.gz
+          if ! git diff --cached --quiet; then
+            git commit -m "Record coverage from the pinned Linux test environment"
+            git push origin HEAD:main
+          fi

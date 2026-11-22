@@ -4,3 +4,7 @@ include Makefile
 .PHONY: measured-run
 measured-run:
 	@docker run $(RUN_FLAGS) --volume "$(CURDIR)/benchmarks/measure.py:/measure.py:ro" --entrypoint python $(IMAGE) /measure.py
+
+.PHONY: strategy-run
+strategy-run:
+	@docker run $(RUN_FLAGS) --entrypoint python $(IMAGE) /app/selector.py --strategy $(STRATEGY)

@@ -17,7 +17,12 @@ jobs:
         run: python3 benchmarks/run.py
       - name: ${{ steps.bench.outputs.result }}
         run: cat .bench/report.json
+      - id: compare
+        name: Compare selection strategies
+        run: python3 benchmarks/compare.py
+      - name: ${{ steps.compare.outputs.result }}
+        run: cat .bench/strategies.json
       - uses: actions/upload-artifact@v4
         with:
           name: sample-report
-          path: .bench/report.json
+          path: .bench/*.json
