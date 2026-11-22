@@ -20,6 +20,10 @@ jobs:
           ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
           path: pinned-sqlglot
           persist-credentials: false
+      - name: Record sample plans from the checked-in map
+        run: |
+          make sample
+          mv output.jsonl ../coverage-reference.jsonl
       - name: Install the recorded environment and trace the pinned suite
         run: |
           image=$(awk '$1 == "FROM" {print $2; exit}' Dockerfile)
@@ -39,6 +43,20 @@ jobs:
           assert len(complete) >= .95 * len(expected) and m["lines"] and m["fixtures"]
           PY
           make sample
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from score import evaluate_run
+          tests = json.loads(Path("sample/tests.json").read_text())["tests"]
+          answers = json.loads(Path("sample/answers.json").read_text())["commits"]
+          for filename in ("../coverage-reference.jsonl", "output.jsonl"):
+              ev = evaluate_run(Path(filename).read_bytes(), tests, answers)
+              assert ev["ok"], ev
+              if filename.startswith(".."):
+                  previous = set(ev["missed_commits"])
+              else:
+                  assert not set(ev["missed_commits"]) - previous, ev
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: linux-coverage
