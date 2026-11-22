@@ -1,0 +1,20 @@
+name: Class dictionary holdout
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run:
+        description: "Prior full-suite run ID to replay; empty collects fresh labels"
+        required: false
+  push:
+    branches: [main]
+    paths: ['.github/workflows/dictionary_holdout.yml', 'tools/dictionary_cases.py']
+permissions:
+  actions: read
+  contents: read
+jobs:
+  dictionary:
+    uses: ./.github/workflows/receiver_holdout.yml
+    with:
+      corpus: dictionary
+      cases: '["baseline","hive-type-literal","snowflake-column-tuple","mysql-registered-lambda","presto-factory-result"]'
+      evidence_run: ${{ inputs.evidence_run || '' }}

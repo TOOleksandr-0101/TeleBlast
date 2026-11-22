@@ -1,5 +1,18 @@
 name: Receiver settings holdout
 on:
+  workflow_call:
+    inputs:
+      corpus:
+        type: string
+        required: true
+      cases:
+        description: "JSON array of frozen case IDs including baseline"
+        type: string
+        required: true
+      evidence_run:
+        description: "Optional run ID for replay instead of fresh labels"
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       evidence_run:
@@ -7,7 +20,7 @@ on:
         required: false
   push:
     branches: [main]
-    paths: ['.github/workflows/receiver_holdout.yml', 'tools/receiver_cases.py']
+    paths: ['tools/receiver_cases.py']
 permissions:
   contents: read
   actions: read
@@ -20,7 +33,7 @@ jobs:
       fail-fast: false
       max-parallel: 5
       matrix:
-        case: [baseline, base-dialect-index, base-generator-values, postgres-placeholder, bigquery-tokenizer]
+        case: ${{ fromJSON(inputs.cases || '["baseline","base-dialect-index","base-generator-values","postgres-placeholder","bigquery-tokenizer"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,22 +48,23 @@ jobs:
         name: Run full pinned pytest suite and verify completeness
         env:
           CASE: ${{ matrix.case }}
+          CORPUS: ${{ inputs.corpus || 'receiver' }}
         run: |
           mkdir -p .bench/evidence
           image=$(awk '$1 == "FROM" {print $2; exit}' Dockerfile)
-          docker run --rm --cpus 2 --memory 4g -e CASE -e PYTHON_CPU_COUNT=2 -e OPENBLAS_NUM_THREADS=1 \
+          docker run --rm --cpus 2 --memory 4g -e CASE -e CORPUS -e PYTHON_CPU_COUNT=2 -e OPENBLAS_NUM_THREADS=1 \
             -v "$PWD:/entry:ro" -v "$PWD/.bench/evidence:/result" -w /entry "$image" sh -ec '
               python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.lock
-              GITHUB_OUTPUT=/result/ci-output python tools/receiver_cases.py measure "$CASE" /entry/pinned /result'
+              GITHUB_OUTPUT=/result/ci-output python "tools/${CORPUS}_cases.py" measure "$CASE" /entry/pinned /result'
           cat .bench/evidence/ci-output >> "$GITHUB_OUTPUT"
       - name: ${{ steps.observed.outputs.case_result }}
         run: cat .bench/evidence/observed.json
       - name: Observed ${{ steps.observed.outputs.labels }}
-        run: echo "Exact labels in the receiver artifact"
+        run: echo "Exact labels in the corpus artifact"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: receiver-${{ matrix.case }}
+          name: ${{ inputs.corpus || 'receiver' }}-${{ matrix.case }}
           path: .bench/evidence
           include-hidden-files: true
   replay:
@@ -64,26 +78,28 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          pattern: receiver-*
-          path: .bench/receiver
+          pattern: ${{ inputs.corpus || 'receiver' }}-*
+          path: .bench/frozen
           github-token: ${{ github.token }}
           run-id: ${{ inputs.evidence_run || github.run_id }}
       - run: make build
       - id: replay
-        name: Score the production image on frozen receiver labels
-        run: python3 benchmarks/replay_mutations.py --corpus receiver .bench/receiver .bench/receiver-report.json
-      - name: ${{ steps.replay.outputs.receiver }}
-        run: echo "Four held-out changes to scalar class settings"
-      - name: ${{ steps.replay.outputs.base_dialect_index }}
-        run: echo "Dialect base class"
-      - name: ${{ steps.replay.outputs.base_generator_values }}
-        run: echo "Generator base class"
-      - name: ${{ steps.replay.outputs.postgres_placeholder }}
-        run: echo "Generator subclass override"
-      - name: ${{ steps.replay.outputs.bigquery_tokenizer }}
-        run: echo "Nested tokenizer override"
+        name: Score the production image on frozen labels
+        env:
+          CORPUS: ${{ inputs.corpus || 'receiver' }}
+        run: python3 benchmarks/replay_mutations.py --corpus "$CORPUS" .bench/frozen .bench/frozen-report.json
+      - name: ${{ steps.replay.outputs.all }}
+        run: echo "Four held-out changes with full-suite labels"
+      - name: ${{ steps.replay.outputs.case_1 }}
+        run: echo "Selected and missed tests for mutation 1"
+      - name: ${{ steps.replay.outputs.case_2 }}
+        run: echo "Selected and missed tests for mutation 2"
+      - name: ${{ steps.replay.outputs.case_3 }}
+        run: echo "Selected and missed tests for mutation 3"
+      - name: ${{ steps.replay.outputs.case_4 }}
+        run: echo "Selected and missed tests for mutation 4"
       - uses: actions/upload-artifact@v4
         with:
-          name: scored-receiver-holdout
-          path: .bench/receiver-report.json
+          name: scored-${{ inputs.corpus || 'receiver' }}-holdout
+          path: .bench/frozen-report.json
           include-hidden-files: true

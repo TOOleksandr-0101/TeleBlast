@@ -93,7 +93,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("evidence", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--corpus", choices=("phase3", "transfer", "receiver"), default="phase3")
+    parser.add_argument("--corpus", choices=("phase3", "transfer", "receiver", "dictionary"), default="phase3")
     args = parser.parse_args()
     cases = CASES
     if args.corpus == "transfer":
@@ -102,6 +102,9 @@ def main():
     elif args.corpus == "receiver":
         from tools.receiver_cases import CASES as receiver_cases
         cases = receiver_cases
+    elif args.corpus == "dictionary":
+        from tools.dictionary_cases import CASES as dictionary_cases
+        cases = dictionary_cases
     rows = load_evidence(args.evidence, cases)
     if args.corpus != "phase3":
         verify_transfer_patches(rows, cases)
@@ -127,19 +130,20 @@ def main():
         values = []
         for name, row in result.items():
             s = row["scores"][group]
-            penalty = f"+{s['penalty']}s/" if args.corpus == "receiver" else ""
+            penalty = f"+{s['penalty']}s/" if args.corpus in {"receiver", "dictionary"} else ""
             values.append(f"{name} {s['missed_cases']}miss/{s['missed_tests']}tests/"
                           f"{penalty}{s['penalized_seconds']:.3f}s")
         text = group + ": " + ", ".join(values)
         outputs[group.replace("-", "_")] = text
     if args.corpus != "phase3":
-        for case in cases:
+        for index, case in enumerate(cases, 1):
             values = []
             for strategy, row in result.items():
                 d = row["detail"][case.name]
                 values.append(f"{strategy}={d['selected']}/{len(d['missed_nodes'])}")
             outputs[case.name.replace("-", "_")] = (
                 f"{case.name} {len(labels[case.name]['failing'])} failing, " + " ".join(values))
+            outputs[f"case_{index}"] = outputs[case.name.replace("-", "_")]
     print("\n".join(outputs.values()))
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a", encoding="utf-8") as f:
