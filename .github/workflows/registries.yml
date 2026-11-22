@@ -1,0 +1,67 @@
+name: Profile class dictionaries
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/registries.yml', 'tools/build_registries.py']
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tobymao/sqlglot
+          ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+          path: pinned-sqlglot
+          persist-credentials: false
+      - name: Trace class table users and deferred calls on the clean checkout
+        run: |
+          image=$(awk '$1 == "FROM" {print $2;exit}' Dockerfile)
+          docker run --rm --cpus 4 --memory 8g -v "$PWD:/entry" -w /entry "$image" sh -ec '
+            python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.lock
+            PYTHONHASHSEED=0 OPENBLAS_NUM_THREADS=1 PYTHON_CPU_COUNT=2 python -X cpu_count=2 tools/build_registries.py pinned-sqlglot maps/registries.json.gz'
+          python3 - <<'PY'
+          import gzip, json
+          with gzip.open("maps/registries.json.gz", "rt") as f:
+              m = json.load(f)
+          assert any("called" in row for row in m["sites"].values())
+          assert m["tracked"] and len(m["complete"]) >= .95 * len(m["nodes"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-observations
+          path: maps/registries.json.gz
+  publish:
+    needs: trace
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: registry-observations
+          path: maps/
+      - name: Publish verified registry observations
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add maps/registries.json.gz
+          git diff --cached --quiet && exit 0
+          git commit -m "Record clean-suite class dictionary consumers and deferred calls"
+          for attempt in 1 2 3; do
+            git pull --rebase origin main
+            git diff --quiet "$GITHUB_SHA" HEAD -- tools/build_registries.py tools/profile_receivers.py tools/build_observations.py tools/build_coverage.py requirements.lock
+            if git push origin HEAD:main; then exit 0; fi
+          done
+          exit 1
