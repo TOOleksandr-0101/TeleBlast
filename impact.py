@@ -19,9 +19,47 @@ class Hunk:
     new_count: int
     body: list[str] = field(default_factory=list)
 
+    def edited_lines(self, side):
+        """Yield exact edited line ranges for ``old`` or ``new`` coordinates.
+
+        Unlike :meth:`changes`, pure insertions have no old edited range and
+        pure deletions have no new edited range.  Precision analysis uses both
+        sides to compare the syntax that was actually added or removed, while
+        line coverage continues to use ``changes()`` and its safe neighbours.
+        """
+        if side not in ("old", "new"):
+            raise ValueError("side must be 'old' or 'new'")
+        line = self.old_start if side == "old" else self.new_start
+        marker = "-" if side == "old" else "+"
+        other = "+" if side == "old" else "-"
+        begin = previous = None
+        for entry in [*self.body, " "]:
+            prefix = entry[0]
+            if prefix == marker:
+                if begin is None:
+                    begin = line
+                previous = line
+            elif begin is not None:
+                yield begin, previous
+                begin = previous = None
+            if prefix != other:
+                line += 1
+
     def changes(self):
         """Yield old-source intervals, including both neighbors for pure insertions."""
-        line = self.old_start if self.old_count else self.old_start + 1
+        yield from self._changes("old")
+
+    def new_changes(self):
+        """Yield new-source intervals, including both neighbors for pure deletions."""
+        yield from self._changes("new")
+
+    def _changes(self, side):
+        old = side == "old"
+        count = self.old_count if old else self.new_count
+        line = (self.old_start if old else self.new_start) if count else (
+            self.old_start if old else self.new_start
+        ) + 1
+        advancing = "-" if old else "+"
         begin = None
         for entry in [*self.body, " "]:
             if entry[0] == " ":
@@ -35,7 +73,7 @@ class Hunk:
             else:
                 if begin is None:
                     begin = line
-                if entry[0] == "-":
+                if entry[0] == advancing:
                     line += 1
 
 

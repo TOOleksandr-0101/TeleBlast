@@ -13,7 +13,7 @@ def main():
     tests = json.loads(Path("sample/tests.json").read_text())["tests"]
     answers = json.loads(Path("sample/answers.json").read_text())["commits"]
     records = {}
-    for strategy in ("all", "static", "coverage", "hybrid"):
+    for strategy in ("all", "static", "coverage", "hybrid", "precision"):
         proc = subprocess.run(["make", "-s", "-f", "benchmarks/limits.mk",
                                "strategy-run", "STRATEGY=" + strategy],
                               stdout=subprocess.PIPE, check=True, timeout=180)

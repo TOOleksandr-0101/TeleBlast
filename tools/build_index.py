@@ -13,6 +13,17 @@ import subprocess
 REVISION = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
 DEFINITIONS = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+SOURCE_OBSERVER_NAMES = {
+    "__code__",
+    "co_firstlineno",
+    "co_lines",
+    "co_positions",
+    "findsource",
+    "getsource",
+    "getsourcelines",
+    "linecache",
+    "traceback",
+}
 
 
 def module_name(path):
@@ -87,6 +98,16 @@ def fixture_arguments(func):
                 yield node.args[0]
 
 
+def observes_python_source(func):
+    """Conservatively identify tests that can observe source text or positions."""
+    for node in ast.walk(func):
+        if isinstance(node, ast.Name) and node.id in SOURCE_OBSERVER_NAMES:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr in SOURCE_OBSERVER_NAMES:
+            return True
+    return False
+
+
 def bind_literals(helper, call, namespace):
     params = [arg.arg for arg in helper.args.args if arg.arg not in {"self", "cls"}]
     arguments = dict(zip(params, call.args))
@@ -146,6 +167,7 @@ def build(root):
         raise ValueError("expected a complete pinned sqlglot checkout")
     graph, spans = {}, {}
     owners, direct, readers, symbol_uses = (defaultdict(set) for _ in range(4))
+    source_observers = set()
     defined = set()
     for path in files:
         tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
@@ -167,6 +189,8 @@ def build(root):
             for scope, func in scoped_functions(tree):
                 if func.name.startswith("test_"):
                     nodeid = "::".join((path, *scope, func.name))
+                    if observes_python_source(func):
+                        source_observers.add(nodeid)
                     for expr in ast.walk(func):
                         if isinstance(expr, ast.Name):
                             symbol_uses[expr.id].add(nodeid)
@@ -192,7 +216,8 @@ def build(root):
 
     return {"revision": REVISION, "files": ordered(owners), "direct": ordered(direct),
             "fixtures": ordered(readers), "spans": spans,
-            "symbols": ordered({name: uses for name, uses in symbol_uses.items() if name in defined})}
+            "symbols": ordered({name: uses for name, uses in symbol_uses.items() if name in defined}),
+            "observers": sorted(source_observers)}
 
 
 if __name__ == "__main__":

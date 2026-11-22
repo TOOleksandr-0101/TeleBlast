@@ -44,6 +44,7 @@ class Recorder:
         self.root = Path(root)
         self.lines = defaultdict(dict)
         self.files = {}
+        self.source_files = {}
         self.mask = 0
         self.untraced_children = 0
         self.monitor = sys.monitoring
@@ -79,6 +80,19 @@ class Recorder:
             path = self.relative(os.path.abspath(filename))
             if path.startswith(("sqlglot/", "tests/")) and "__pycache__/" not in path:
                 self.files[path] = self.files.get(path, 0) | self.mask
+                if path.endswith(".py") and not self._importing_source():
+                    self.source_files[path] = self.source_files.get(path, 0) | self.mask
+
+    @staticmethod
+    def _importing_source():
+        """Return whether an open came from Python's ordinary import machinery."""
+        frame = sys._getframe(1)
+        while frame is not None:
+            filename = frame.f_code.co_filename.replace("\\", "/")
+            if filename.startswith("<frozen importlib") or "/importlib/" in filename:
+                return True
+            frame = frame.f_back
+        return False
 
     def start(self):
         self.monitor.use_tool_id(self.tool, "teleblast")
@@ -110,7 +124,7 @@ def traced_job(root, spool, mask, func, args, kwargs):
         def flush():
             rec.stop()
             with gzip.open(Path(spool) / f"{os.getpid()}.json.gz", "wt", encoding="utf-8") as f:
-                json.dump([rec.lines, rec.files, rec.untraced_children], f)
+                json.dump([rec.lines, rec.files, rec.source_files, rec.untraced_children], f)
 
         multiprocessing.util.Finalize(None, flush, exitpriority=1)
     _worker_recorder.context(mask)
@@ -176,7 +190,7 @@ def encode(rec, plugin):
             else:
                 rows.append([line, line, group])
     return {
-        "version": 1,
+        "version": 2,
         "revision": REVISION,
         "nodes": plugin.nodes,
         "complete": [i for i, node in enumerate(plugin.nodes)
@@ -185,6 +199,7 @@ def encode(rec, plugin):
         "groups": [indices(mask) for mask in groups],
         "lines": ranges,
         "fixtures": {p: indices(mask) for p, mask in sorted(rec.files.items())},
+        "source_readers": {p: indices(mask) for p, mask in sorted(rec.source_files.items())},
     }
 
 
@@ -219,7 +234,7 @@ def main():
             raise SystemExit(f"Collection failed: {status}")
         for shard in sorted(Path(spool).glob("*.json.gz")):
             with gzip.open(shard, "rt", encoding="utf-8") as f:
-                lines, files, incomplete = json.load(f)
+                lines, files, source_files, incomplete = json.load(f)
             rec.untraced_children |= incomplete
             for path, rows in lines.items():
                 dest = rec.lines[path]
@@ -227,6 +242,8 @@ def main():
                     dest[int(line)] = dest.get(int(line), 0) | mask
             for path, mask in files.items():
                 rec.files[path] = rec.files.get(path, 0) | mask
+            for path, mask in source_files.items():
+                rec.source_files[path] = rec.source_files.get(path, 0) | mask
     data = encode(rec, plugin)
     output.parent.mkdir(exist_ok=True, parents=True)
     packed = json.dumps(data, separators=(",", ":")).encode()
@@ -241,6 +258,7 @@ def main():
         pending_path.unlink(missing_ok=True)
     print(f"{len(data['complete'])}/{len(plugin.nodes)} complete tests, "
           f"{len(rec.lines)} traced files, {len(rec.files)} opened resources, "
+          f"{len(rec.source_files)} explicit source reads, "
           f"{output.stat().st_size:,} bytes")
 
 

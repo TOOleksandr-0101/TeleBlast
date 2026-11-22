@@ -10,7 +10,7 @@ On Linux with Docker, GNU make and Python 3.9+ installed on the host:
 make sample                          # Build linux/amd64, run all 30 patches, score output.jsonl
 make check                           # Validate the JSONL contract and commit coverage
 python3 benchmarks/run.py             # Build, make sample, then time three identical selections
-python3 benchmarks/compare.py         # Score four strategies using the same image and limits
+python3 benchmarks/compare.py         # Score all five strategies using the same image and limits
 ```
 
 The benchmark writes machine-readable reports to `.bench/`. For local development with Python 3.13, run `python -m unittest discover -s tests`. Run the packaged selector with `python selector.py --data-dir sample > output.jsonl` and score it with `python score.py sample sample/answers.json output.jsonl`. These commands use the host environment.
@@ -24,6 +24,8 @@ The root Dockerfile copies three Python modules and the prebuilt maps into the p
 3. `tools/build_coverage.py` runs pytest against the **clean base revision** with integration tests enabled. It attributes executed lines to pytest node IDs, records fixture and Python source reads, attributes shared setup/teardown to the test module, and collects process-pool work. It stores shared test sets once and compresses consecutive line ranges. A failed, skipped or incompletely traced test can still be selected if it appears in the runtime catalog.
 4. `selector.py` translates node IDs and test-file paths into the batch's test numbers. For a function-body edit, hybrid selection takes the union of relevant line and function coverage, static symbol references and source readers. Structural or module-level edits widen selection to known dependent tests. When the compiled module matches byte for byte, including source positions, the selector retains observed source readers and incompletely traced tests. Fixtures use both observed reads and static links. The results for all changed files are combined. Unknown dependencies fall back to the full suite.
 5. `scheduler.py` works in integer milliseconds. It compares up to eight worker counts, accounting for the 2-second charge per occupied worker. It tries longest-test-first placement, skips counts whose lower bound cannot improve the price, and refines small sets with bounded partition search. Zero-duration tests stay in the plan. The report counts sample plans that reach a mathematical lower bound; for arbitrary inputs the algorithm is a heuristic.
+
+The experimental `precision` strategy parses both Python ASTs and narrows ordinary edits to executed statements. It expands complete predicates for short-circuit changes, widens new control flow to observed callers, and keeps dependency fallbacks for signatures, imports, module initialization and exception-handler structure. Explicit source readers and incomplete subprocess tests are indexed separately. See [PRECISION.md](PRECISION.md) for diagnostics, mutation evidence and known risks. Hybrid remains the default.
 
 The static index was built from 250 Python modules and contains 6,650 definition spans and 62 fixture paths. The bundled source archive includes sqlglot's MIT license. The selector uses maps built from the pinned revision. The official sample labels are used only by the scorer and benchmark harness.
 
@@ -51,19 +53,20 @@ The benchmark starts with the supplied `make sample`. Three further runs use the
 | Supplied starter, all tests on three workers | 1210.470 | 0 |
 | All tests, optimized worker count | 1104.510 | 0 |
 | Static dependencies and fixtures | 767.372 | 0 |
-| Changed-line coverage and file reads | 301.396 | 0 |
+| Changed-line coverage and file reads | 300.868 | 0 |
 | **Hybrid (submission default)** | **491.903** | **0** |
+| Precision (experimental) | 165.538 | 0 |
 
 | Linux/amd64 benchmark | Median selector CPU | Median selector wall time | Docker build |
 | --- | ---: | ---: | ---: |
 | [Unmodified starter](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014264836) | 0.111058 s | 0.111652 s | 4.624 s |
 | [Hybrid, before the map rebuild](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014772168) | 0.539645 s | 0.540208 s | 7.680 s |
 
-The hybrid saves **718.567 simulated seconds (59.4%)** against the measured starter. Simulated time plus the measured median selector CPU was **492.443 s**, below the brief's 1614.1-second target on the sample. The [second Linux map build](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014839162) preserved the default plans byte for byte. The coverage-only ablation changed from 300.868 s to 301.396 s. The [sample workflow](https://github.com/TOOleksandr-0101/TeleBlast/actions/workflows/sample.yml) records timings, all four strategies and the full report for each pushed revision.
+The hybrid saves **718.567 simulated seconds (59.4%)** against the measured starter. Simulated time plus the measured median selector CPU was **492.443 s**, below the brief's 1614.1-second target on the sample. The [second Linux map build](https://github.com/TOOleksandr-0101/TeleBlast/actions/runs/45014839162) preserved the default plans byte for byte. The coverage-only ablation changed from 300.868 s to 301.396 s. The [sample workflow](https://github.com/TOOleksandr-0101/TeleBlast/actions/workflows/sample.yml) records timings, all five strategies and the full report for each pushed revision.
 
-The hybrid default retains a function's other callers and transitive importers when a change could affect initialization. Exact-line coverage was faster on these 30 patches. New control flow can enter a line that none of the original tests reached, so this narrower mode remains an experiment. The hybrid selector's plans attain the scheduling lower bound on **30/30** commits and occupy **65,414 bytes** of stdout.
+The hybrid default retains a function's other callers and transitive importers when a change could affect initialization. Exact-line coverage was faster on these 30 patches. New control flow can enter a line that none of the original tests reached, so this narrower mode remains an experiment. The hybrid selector's plans attain the scheduling lower bound on **30/30** commits and occupy **65,384 bytes** of stdout. Precision occupies **2,150 bytes**.
 
-The committed Linux map covers 234 executed Python files. Of the 1,620 numbered tests, 1,619 have complete traces. The remaining lazy-dialect-loading test starts its own interpreter and the default keeps it when coverage is used.
+The committed map covers 234 executed Python files. Of the 1,620 numbered tests, 1,619 have complete traces. The remaining lazy-dialect-loading test starts its own interpreter; Precision retains it only for statically linked semantic changes. Coverage map version 2 also records 14 Python files with explicit source readers separately from ordinary import opens.
 
 ## Handoff and next experiments
 
