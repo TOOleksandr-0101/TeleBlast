@@ -127,7 +127,9 @@ def main():
         values = []
         for name, row in result.items():
             s = row["scores"][group]
-            values.append(f"{name} {s['missed_cases']}miss/{s['missed_tests']}tests/{s['penalized_seconds']:.3f}s")
+            penalty = f"+{s['penalty']}s/" if args.corpus == "receiver" else ""
+            values.append(f"{name} {s['missed_cases']}miss/{s['missed_tests']}tests/"
+                          f"{penalty}{s['penalized_seconds']:.3f}s")
         text = group + ": " + ", ".join(values)
         outputs[group.replace("-", "_")] = text
     if args.corpus != "phase3":

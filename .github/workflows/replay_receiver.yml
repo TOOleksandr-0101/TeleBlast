@@ -1,0 +1,47 @@
+name: Replay receiver holdout
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run:
+        description: "Full-suite Receiver settings holdout run ID"
+        default: "45021152687"
+        required: true
+  push:
+    branches: [main]
+    paths: ['.github/workflows/replay_receiver.yml', 'benchmarks/replay_mutations.py', 'benchmarks/independent.mk', 'selector.py', 'impact.py', 'scheduler.py', 'maps/**', 'Dockerfile', 'README.md']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: receiver-*
+          path: .bench/receiver
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.evidence_run || '45021152687' }}
+      - run: make build
+      - id: score
+        name: Score the actual image on all frozen mutations
+        run: python3 benchmarks/replay_mutations.py --corpus receiver .bench/receiver .bench/receiver-report.json
+      - name: ${{ steps.score.outputs.receiver }}
+        run: echo "Four independent receiver settings / misses, missed tests, score with penalties"
+      - name: ${{ steps.score.outputs.base_dialect_index }}
+        run: echo "Default array indexing"
+      - name: ${{ steps.score.outputs.base_generator_values }}
+        run: echo "Inherited VALUES wrapping"
+      - name: ${{ steps.score.outputs.postgres_placeholder }}
+        run: echo "Overridden parameter token"
+      - name: ${{ steps.score.outputs.bigquery_tokenizer }}
+        run: echo "Overridden nesting behavior"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scored-receiver-final
+          path: .bench/receiver-report.json
+          include-hidden-files: true
