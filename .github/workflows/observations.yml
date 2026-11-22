@@ -1,0 +1,66 @@
+name: Profile comparison operands
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/observations.yml', 'tools/build_observations.py']
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tobymao/sqlglot
+          ref: eb11aec4be8cb2122afe713a4816662c3f0fb2fa
+          path: pinned-sqlglot
+          persist-credentials: false
+      - name: Profile the unmodified pinned test suite
+        run: |
+          image=$(awk '$1 == "FROM" {print $2;exit}' Dockerfile)
+          docker run --rm --cpus 4 --memory 8g -v "$PWD:/entry" -w /entry "$image" sh -ec '
+            python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.lock
+            PYTHONHASHSEED=0 OPENBLAS_NUM_THREADS=1 PYTHON_CPU_COUNT=2 python -X cpu_count=2 tools/build_observations.py pinned-sqlglot maps/observations.json.gz'
+          python3 - <<'PY'
+          import gzip, json
+          with gzip.open("maps/observations.json.gz", "rt") as f:
+              data = json.load(f)
+          assert data["sites"] and len(data["complete"]) >= .95 * len(data["nodes"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: operand-observations
+          path: maps/observations.json.gz
+  publish:
+    needs: trace
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: operand-observations
+          path: maps/
+      - name: Publish verified observations on main
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add maps/observations.json.gz
+          git diff --cached --quiet && exit 0
+          git commit -m "Record primitive comparison observations from the clean Linux suite"
+          for attempt in 1 2 3; do
+            git pull --rebase origin main
+            git diff --quiet "$GITHUB_SHA" HEAD -- tools/build_observations.py tools/build_coverage.py requirements.lock
+            if git push origin HEAD:main; then exit 0; fi
+          done
+          exit 1
